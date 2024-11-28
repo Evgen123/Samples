@@ -1,0 +1,72 @@
+CREATE PROCEDURE dbo.CopyRepairComponentsGroup
+    @idSrcGroup INT,  -- Исходная группа, которую копируем
+    @Name NVARCHAR(50),  -- Новое имя для новой группы
+    @Description NVARCHAR(512),  -- Описание для новой группы
+    @idDstGroup INT OUT  -- Возвращаемый ID новой группы
+AS
+BEGIN
+    SET XACT_ABORT ON;
+    SET NOCOUNT ON;
+
+    -- Проверка наличия группы с заданным @idSrcGroup
+    IF NOT EXISTS (SELECT 1 FROM RepairComponentGroups WHERE idGroup = @idSrcGroup)
+    BEGIN
+        RETURN 1;
+    END;
+
+    BEGIN TRANSACTION;
+
+    -- 1. Копируем исходную группу в новую запись в RepairComponentGroups с помощью MERGE
+    INSERT INTO RepairComponentGroups (Name, Description, UserSortNum)
+    SELECT @Name, @Description, ISNULL(MAX(UserSortNum), 0) + 1 FROM RepairComponentGroups;
+
+    -- Получаем ID новой группы
+    SET @idDstGroup = SCOPE_IDENTITY();
+
+    -- Временная таблица для сопоставления старых и новых ID моделей
+    DECLARE @ModelMap TABLE (idOldModel INT primary key, idNewModel INT);
+
+    -- 2. Копируем модели, связанные с исходной группой с помощью MERGE
+    MERGE INTO RepairComponentModels AS target
+    USING (
+        SELECT idModel, @idDstGroup AS idGroup, Name, Description, UserSortNum
+        FROM RepairComponentModels
+        WHERE idGroup = @idSrcGroup
+    ) AS source
+    ON 1 = 0  -- Условие всегда ложное для вставки
+    WHEN NOT MATCHED THEN
+    INSERT (idGroup, Name, Description, UserSortNum)
+    VALUES (source.idGroup, source.Name, source.Description, source.UserSortNum)
+    OUTPUT inserted.idModel, source.idModel INTO @ModelMap (idNewModel, idOldModel);
+
+    -- Временная таблица для сопоставления старых и новых ID компонентов
+    DECLARE @ComponentMap TABLE (idOldComponent INT primary key, idNewComponent INT);
+
+    -- 3. Копируем компоненты в целевые модели
+    MERGE INTO RepairComponents AS target
+    USING (
+        SELECT *, row_number() over(order by @idSrcGroup) rn FROM RepairComponents rc join @ModelMap mm on rc.idModel = mm.idOldModel
+    ) AS source
+    ON 1 = 0
+    WHEN NOT MATCHED THEN INSERT (idParentComponent, idModel, Name, Description, UserSortNum)
+							VALUES (NULL, idNewModel, rn, source.Description, rn)
+    OUTPUT inserted.idComponent, source.idComponent INTO @ComponentMap (idNewComponent, idOldComponent);
+
+	-- 4. Обновляем иерархию
+
+	update t set idParentComponent = pm.idNewComponent, Name = s.Name, UserSortNum = s.UserSortNum
+	from RepairComponents t join @ComponentMap cm on cm.idNewComponent = t.idComponent
+		join RepairComponents s on s.idComponent = cm.idOldComponent
+		left join @ComponentMap pm on pm.idOldComponent = s.idParentComponent
+
+    -- 5. копируем старые RepairComponentDefects из дерева RepairComponents
+	INSERT RepairComponentDefects(idRepairComponent, Name, Descr, UserSortNum, Mode, idBranch, bInspector, bMechanic, bPowerEngeneer)
+	select pm.idNewComponent, rd.Name, rd.Descr, rd.UserSortNum, rd.Mode, rd.idBranch, rd.bInspector, rd.bMechanic, rd.bPowerEngeneer 
+	from RepairComponentDefects rd
+    join @ComponentMap pm on rd.idRepairComponent = pm.idOldComponent
+
+
+    COMMIT;
+    RETURN 0;
+END;
+GO
