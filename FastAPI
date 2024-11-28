@@ -1,0 +1,1196 @@
+# -*- coding: utf-8 -*-
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request, Query
+from pydantic import BaseModel
+from fastapi.responses import JSONResponse  # Импортируем JSONResponse
+from typing import List, Dict, Any
+import json
+import logging
+import config
+from decimal import Decimal
+import requests
+import mysql.connector
+import random
+from wsparser import WordstatParser, YandexDirect
+import time
+import re
+import json, urllib.request, urllib.error
+from bs4 import BeautifulSoup
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import Select
+from selenium.webdriver.common.keys import Keys
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.common.exceptions import NoSuchElementException
+import time
+
+from urllib.parse import urlparse, parse_qs
+
+app = FastAPI()
+
+
+def get_db_connection():
+    conn = mysql.connector.connect(
+        host=config.host_mysql,
+        port=config.port_mysql,
+        user=config.user_mysql,
+        password=config.password_mysql,
+        database=config.dbname_mysql
+    )
+    return conn
+
+prompt_ai0 = """
+Представьте, что вы SEO-специалист.
+На основе предоставленной информации по товару ниже, скинь облако тегов в количестве около 10-14, используй 6 принципов:
+1.уже имеются эти теги: {text_tags}
+2.Бренд товара ( при наличии такового ) - к примеру, FoldTrek 1 тэг по указанному бренду,
+3.выдели {n} ключевые слова из описания для seo  с указанием продукта минимум в одном,
+4.все теги должны быть разными,
+5.каждый тег не может быть больше 4х слов,
+6.возвращай только теги через запятую без любой вводной информации.
+Вот информация по товару:
+"""
+
+
+prompt_ai2 = """
+Представьте, что вы SEO-специалист.
+На основе предоставленной информации по товару ниже, скинь облако тегов в количестве 10, разделяй через запятые, используй 5 принципов:
+1.Семантические вариации -  топ 5 запросов вордстат(кейсо\кейколлектор) по ключу element_name
+2.Бренд товара ( при наличии такового ) - к примеру, FoldTrek 1 тэг по указанному бренду
+3.выдели 4 ключевые слова из описания для seo  с указанием продукта минимум в одном, используй ключ element_description
+4.все теги должны быть разными
+5.возвращай только теги через запятую без любой вводной информации.
+Вот информация по товару:
+"""
+
+# купили товар или хотите купить и у вас вопрос
+# соверши 0-5 орфографических, лингвистических ошибки
+# пиши косноязычно, без ошибок, применяй сленг
+# пиши от лица представителя СНГ
+# положительный или нейтральный отзыв, немного негативный
+# выбрать 1-3 области, про что сказать
+# перемешать местами информацию по товару
+# не упоминай полностью название товара в своем отзыве
+# Напишите отзыв на русском языке, представляя, что вы русский, но с разных уголков странц, или из страны СНГ: узбек, казах, армянин и т.д.. Добавьте уникальные выражения, свойственные этой национальности, чтобы передать особую колоритность.
+
+prompt_comment = """
+Представьте, что вы покупатель и купили товар, информация по которому будет выслана ниже.
+Вам нужно придумать положительный или нейтральный отзыв в 1-2 предложения на этот товар.
+На что можно обратить внимание:
+1.На информацию по товару и предполагаемые функциональные свойства товара.
+2.Что не будет упомянуто в карточке товара: 
++ сроки производства-доставки четкие, 
++ менеджеры обходительные, все объяснили-показали, 
+с большим объемом справились,
++ большой спектр цветов,
++ дизайнеры придумали очень оригинальный логотип, покупателям "зашел",
++ качественные болванки для нанесения логотипов,
++ качественные краски, долго держатся,
++ отзывы оптовиков, что все документы в срок, другие моменты
+3.Функционал:
++ насколько удобно пользоваться этим предметом, какой функционал
++ как этот предмет решает проблему клиента (какие потребности закрывает -из серии -беру термос с собой в походы и на рыбалку теперь всегда/ ланч бокс экономит семейный бюджет тк обедаю на работе домашней едой и тд 
++ какой он красивый, Привлекает внимание других, Окружающие замечают, реагируют и хотят такой же.
++ качественное нанесение, логотип заметен, но не бросается в глаза
+4.удобство сайта:
++ Понравилось, что на сайте можно сразу рассчитать стоимость Нанесения логотипа\рисунка, и стоимость подсчиталась один-в-один точно такая
++ всегда можно получить ответ на вопрос  на сайте от консультанта, который загадочным образом всегда онлайн
++ на сайте много нужных функций - удобно выбрать товар, заказал и вперед
++ много толковых отзывов по товарам
+------------------------
+Вот информация по товару:
+"""
+
+add_prompt = """
+--------------------
+Предоставь ответ **только** в виде валидного JSON без дополнительных комментариев, форматирования кода или пояснений. 
+Для ключа "Answer" значением будет ваш текст сообщения, сформированного заданием выше.
+Для ключа "Name" значением будет подходящее под сообщение имя, выбери любое (возможно с отчеством). Например, если пишется от лица взрослого человека,
+или человека, занимающего высокую должность - иногда указывать и имя и отчество, но если просто физлицо или молодой человек, то только Имя, можно латиницей.
+Не включай тройные кавычки или слово "json" в ответе. Только JSON-объект. 
+
+Вот пример, который мы ждём от тебя:
+{{    
+    "Answer": "Благодарна за качественный товар, покупаем уже не в первый раз",
+    "Name": "Мария Ивановна"
+}} 
+
+"""
+
+
+
+def make_prompt() -> str:
+    prompt = ""
+    k = random.randint(1, 30)
+    if k in range(1, 1):
+        text1 = "Представьте, что вы хотите купить этот товар, информация по которому будет выслана ниже."   
+        text2 = "Вам нужно придумать вопрос по этому товару."
+        prompt = text1 + text2
+    else:
+        text1 = "Представьте, что вы покупатель и купили товар, информация по которому будет выслана ниже."
+        k = random.randint(1, 50)
+        if k == 1:
+            text2 = "Напишите слегка отрицательный отзыв, указав причины небольшой неудовлетворенности."
+        elif k in range(2, 35):
+            text2 = "Напишите нейтральный отзыв."
+        else:
+            text2 = "Напишите умеренно положительный отзыв."
+        prompt = text1 + text2
+
+    k = random.randint(1, 30)
+    if k in range(1, 20):
+        text1 = "Уложись в 9 слов."
+    elif k in range(21, 26):
+        text1 = "Уложись в 14 слов."
+    elif k in range(27, 29):
+        text1 = "Уложись в 20 слов."
+    else:
+        text1 = "Уложись в 30 слов."
+
+    prompt += text1 
+
+    k = random.randint(1, 35)
+    if k in range(1, 2):
+        text1 = "Пиши от лица пессимиста."
+    elif k in range(3, 4):
+        text1 = "Пиши от лица фаталиста."
+    elif k in range(5, 7):
+        text1 = "Пиши от лица оптимиста."
+    elif k in range(8, 11):
+        text1 = "Пиши от лица реалиста."
+    elif k in range(12, 13):
+        text1 = "Пиши от лица циника."
+    elif k in range(14, 15):
+        text1 = "Пиши от лица скептика."
+    elif k in range(16, 17):
+        text1 = "Пиши от лица меланхолика."
+    elif k in range(18, 20):
+        text1 = "Пиши от лица идеалиста."
+    elif k in range(21, 22):
+        text1 = "Пиши от лица прагматика."
+    elif k in range(23, 24):
+        text1 = "Пиши от лица интроверта."
+    elif k in range(25, 26):
+        text1 = "Пиши от лица экстраверта."
+    elif k in range(27, 28):
+        text1 = "Пиши от лица конформиста."
+    elif k in range(29, 32):
+        text1 = "Пиши от лица индивидуалиста."
+    else:
+        text1 = "Пиши от лица юмориста."
+
+    prompt += text1 
+
+    k = random.randint(1, 30)
+    if k in range(1, 2):
+        text1 = "Соверши 1 орфографическую ошибку."
+    elif k == 3:
+        text1 = "Соверши 2 орфографические ошибки."
+    elif k == 4:
+        text1 = "Соверши 3 орфографические ошибки."
+    elif k in range(5, 6):
+        text1 = "Соверши 1 лингвистическую ошибку."
+    elif k == 7:
+        text1 = "Соверши 2 лингвистические ошибки."
+    elif k == 8:
+        text1 = "Соверши 3 лингвистические ошибки."
+    else:
+        text1 = ""
+
+    prompt += text1 
+
+    k = random.randint(1, 30)
+    if k in range(1, 25):
+        text1 = "Не отправляйте восклицательный знак и двоеточие."
+    else:
+        text1 = ""
+
+    prompt += text1 + " Не включайте любые кавычки в ваш ответ. "
+
+    k = random.randint(1, 30)
+    if k in range(1, 3):
+        text1 = "Пиши просторечно."
+    elif k in range(4, 8):
+        text1 = "Пиши литературным языком."
+    elif k == 9:
+        text1 = "Применяй сленг."
+    elif k in range(10, 14):
+        text1 = "Напиши отзыв от лица человека одной из стран СНГ — выбери одну национальность, например, узбек, казах, армянин и т.д. Не пиши, от лица кого ты пишешь, просто в отзыве передай колорит, используя уникальные выражения и фразы, характерные для выбранной культуры. Пусть отзыв звучит так, как мог бы его написать реальный человек с характерными особенностями речи этой национальности."
+    elif k == 15:
+        text1 = "Пиши необычно."
+    elif k == 16:
+        text1 = "Пиши уникально."
+    elif k in range(17, 20):
+        text1 = "Пиши четко и по делу."
+    elif k in range(21, 25):
+        text1 = "Пиши от лица женщины."
+    elif k == 26:
+        text1 = "Пиши от лица пожилого человека."
+    elif k in range(27, 29):
+        text1 = "Пиши от лица молодого человека."
+    else:
+        text1 = ""
+
+    prompt += text1  
+
+    k = random.randint(1, 30)
+    if k in range(1, 7):
+        text1 = "В твоем ответе не упоминай название товара."
+    elif k in range(8, 11):
+        text1 = "Упоминай название товара не полностью."
+    elif k in range(12, 17):
+        text1 = "Упоминай название товара очень коротко."
+    elif k in range(18, 23):
+        text1 = "Упоминай название товара вскользь."
+    elif k in range(24, 25):
+        text1 = "Переставь слова в названии товара, когда будешь его упоминать."
+    elif k in range(26, 27):
+        text1 = "Упоминай название товара в середине вашего ответа не целиком."
+    elif k in range(28, 29):
+        text1 = "Упоминай название товара в конце вашего ответа не целиком."
+    else:
+        text1 = ""
+        
+    prompt += text1    
+
+    k = random.randint(1, 35)
+    if k in range(1, 9):
+        text1 = "Учти, что ты купил несколько единиц этого товара для Подарков или мерча или welcome pack для сотрудников, но не пиши об этом напрямую."
+    elif k in range(10, 22):
+        text1 = "Учти, что ты купил несколько единиц этого товара для Подарков клиентам (в т.ч вип), но не пиши об этом напрямую."
+    elif k in range(23, 26):
+        text1 = "Учти, что ты купил несколько единиц этого товара для Раздатки мелкой (в своих магазинах/клиниках, в подарки), но не пиши об этом напрямую."
+    elif k in range(27, 29):
+        text1 = "Учти, что ты купил несколько единиц этого товара на Выставку, но не пиши об этом напрямую."
+    else:
+        text1 = ""
+        
+    prompt += text1  
+
+    k = random.randint(1, 35)
+    if k in range(1, 9):
+        text1 = "Учти, что ты купил как физлицо, не юрлицо, но не пиши об этом напрямую."
+    elif k in range(10, 12):
+        text1 = "Учти, что ты купил как HR-сотрудник, но не пиши об этом напрямую."
+    elif k in range(13, 15):
+        text1 = "Учти, что ты купил как маркетолог компании, но не пиши об этом напрямую."
+    elif k in range(16, 18):
+        text1 = "Учти, что ты купил как секретарь компании, но не пиши об этом напрямую."
+    elif k in range(19, 21):
+        text1 = "Учти, что ты купил как директор подразделения компании, но не пиши об этом напрямую."
+    elif k in range(22, 29):
+        text1 = "Учти, что ты купил как простой сотрудник компании отвечающий за заказ сувенирки для компании, но не пиши об этом напрямую."
+    elif k in range(29, 30):
+        text1 = "Учти, что ты купил как благодарный директор компании, но не пиши об этом напрямую."
+    else:
+        text1 = ""
+        
+    prompt += text1  
+
+    prompt += "\n-------- \nНа что хотелось бы, чтобы ты обратил внимание: "
+
+    k = random.randint(1, 30)
+    if k in range(1, 9):
+        text1 = "На информацию по товару и предполагаемые функциональные свойства товара."
+    elif k in range(10, 15):
+        text1 = """На то, что не будет упомянуто в информации по товару: 
++ сроки производства-доставки четкие, 
++ менеджеры обходительные, все объяснили-показали, с большим объемом справились,
++ большой спектр цветов,
++ дизайнеры придумали очень оригинальный логотип, покупателям "зашел",
++ качественные болванки для нанесения логотипов,
++ качественные краски для нанесения логотипов, долго держатся,
++ все документы в срок, другие моменты от лица оптового покупателя
+"""
+    elif k in range(16, 20):
+        text1 = """На то, что не будет упомянуто в информации по товару: 
++ сроки производства-доставки четкие, 
++ большой спектр цветов для принта на этот товар,
++ дизайнеры помогли и  разработали классный макет,
++ это качественный товар для нанесения на него логотипов,
++ качественные краски, долго держатся,
++ рассказали все нюансы нанесения на данный товар и посоветовали оптимальный вариант
+"""
+    elif k in range(21, 26):
+        text1 = """Функционал:
++ насколько удобно пользоваться этим предметом, какой функционал
++ как этот предмет решает вашу проблему (какие потребности закрывает -из серии -беру термос с собой в походы и на рыбалку теперь всегда/ ланч бокс экономит семейный бюджет тк обедаю на работе домашней едой и тд )
++ какой товар красивый, Привлекает внимание других, Окружающие замечают, реагируют и хотят такой же.
++ качественное нанесение, логотип получился заметным, но не бросается в глаза
+"""
+    else:
+        text1 = """удобство сайта:
++ Понравилось, что на сайте можно сразу рассчитать стоимость Нанесения логотипа\рисунка, и стоимость подсчиталась один-в-один точно такая
++ всегда можно получить ответ на вопрос  на сайте от консультанта, который загадочным образом всегда онлайн
++ на сайте много нужных функций - удобно выбрать товар, заказал и вперед
++ много толковых отзывов по товарам
+"""
+
+    prompt += text1   
+
+    prompt += """\n------------------------
+Вот информация по товару:  """
+
+    return prompt
+
+
+
+
+url ='https://api-sandbox.direct.yandex.ru/v4/json/' 
+
+
+def get_parser(start, end):
+    k = random.randint(start, end)
+    if k == 1:
+            parser = WordstatParser(url, config.wordstat_TOKEN1, config.userName1)
+            print('>>> токен = '+ config.wordstat_TOKEN1)
+    elif k == 2:
+            parser = WordstatParser(url, config.wordstat_TOKEN2, config.userName2)
+            print('>>> токен = '+ config.wordstat_TOKEN2)
+    elif k == 3:
+            parser = WordstatParser(url, config.wordstat_TOKEN3, config.userName3)
+            print('>>> токен = '+ config.wordstat_TOKEN3)
+    elif k == 4:
+            parser = WordstatParser(url, config.wordstat_TOKEN4, config.userName4)
+            print('>>> токен = '+ config.wordstat_TOKEN4)
+    elif k == 5:
+            parser = WordstatParser(url, config.wordstat_TOKEN5, config.userName5)
+            print('>>> токен = '+ config.wordstat_TOKEN5)
+    elif k == 6:
+            parser = WordstatParser(url, config.wordstat_TOKEN6, config.userName6)
+            print('>>> токен = '+ config.wordstat_TOKEN6)
+    elif k == 7:
+            parser = WordstatParser(url, config.wordstat_TOKEN7, config.userName7)
+            print('>>> токен = '+ config.wordstat_TOKEN7)
+    elif k == 8:
+            parser = WordstatParser(url, config.wordstat_TOKEN8, config.userName8)
+            print('>>> токен = '+ config.wordstat_TOKEN8)
+    elif k == 9:
+            parser = WordstatParser(url, config.wordstat_TOKEN9, config.userName9)
+            print('>>> токен = '+ config.wordstat_TOKEN9)
+    elif k == 10:
+            parser = WordstatParser(url, config.wordstat_TOKEN10, config.userName10)
+            print('>>> токен = '+ config.wordstat_TOKEN10)
+    else:
+        parser = WordstatParser(url, config.wordstat_TOKEN1, config.userName1)
+        print('>>> токен = '+ config.wordstat_TOKEN1)
+
+    return  parser  
+
+
+def get_token(start, end):
+    k = random.randint(start, end)
+    if k == 1:
+            [token, login] = [config.wordstat_TOKEN1, config.userName1]
+    elif k == 2:
+            [token, login] = [config.wordstat_TOKEN2, config.userName2]
+    else:
+            [token, login] = [config.wordstat_TOKEN3, config.userName3]
+    
+    return  [token, login]  
+
+
+def get_rapidapi(start, end) -> str:
+    #пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅпїЅ пїЅ пїЅпїЅпїЅпїЅпїЅпїЅпїЅ mp3.
+    k = random.randint(start, end)
+    if k == 0:
+            rapidapi = config.rapidapi_01
+    #elif k == 0:
+    #        rapidapi = config.rapidapi_02
+    elif k == 1:
+            rapidapi = config.rapidapi_1
+    elif k == 2:
+            rapidapi = config.rapidapi_2
+    elif k == 3:
+            rapidapi = config.rapidapi_3
+    elif k == 4:
+            rapidapi = config.rapidapi_4
+    elif k == 5:
+            rapidapi = config.rapidapi_5
+    elif k == 6:
+            rapidapi = config.rapidapi_6
+    elif k == 7:
+            rapidapi = config.rapidapi_7
+    elif k == 8:
+            rapidapi = config.rapidapi_8
+    elif k == 9:
+            rapidapi = config.rapidapi_9
+    elif k == 10:
+            rapidapi = config.rapidapi_10
+    elif k == 11:
+            rapidapi = config.rapidapi_11
+    elif k == 12:
+            rapidapi = config.rapidapi_12
+    elif k == 13:
+            rapidapi = config.rapidapi_13
+    elif k == 14:
+            rapidapi = config.rapidapi_14
+    elif k == 15:
+            rapidapi = config.rapidapi_15
+    elif k == 16:
+            rapidapi = config.rapidapi_16
+    else:
+            rapidapi = config.rapidapi_0
+
+    return rapidapi
+
+
+
+
+
+        
+def get_data_for_points():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+SELECT ID, CODE, NAME 
+FROM b_iblock;
+    """)
+    rows = cursor.fetchall()
+
+    # rows = json.loads(rows)
+    # Преобразуем результат в формат JSON
+    data = []
+    for row in rows:
+        data.append({
+            "ID": row[0],
+            "CODE": row[1],
+            "NAME": row[2]
+        })
+    
+    cursor.close()
+    conn.close()
+
+    return data
+
+
+class CommentData(BaseModel):
+    ID: int
+    ACTIVE: str
+    MODERATED: str
+    NAME: str
+    TEXT: str
+    CHILI_USER_CODE: str
+    USER_ID: int
+    URL: str
+    SITE_ID: str
+    RATING: int
+    PARENT_ID: int
+    LEFT_MARGIN: int
+    RIGHT_MARGIN: int
+    DEPTH_LEVEL: int
+    CHANNEL_EVENT_SEND: str
+    CREATED: str
+
+def login_phpmyadmin(sql_query: str):
+    session = requests.Session()
+    login_url = "https://94.250.252.49:1501/WP5UPKs85N92C7Z1/phpmyadmin/index.php"
+    login_data = {
+        'pma_username': config.user_mysql,
+        'pma_password': config.password_mysql,
+        'db': config.dbname_mysql,
+        'target': 'db_structure.php',
+        'server': '4',
+        'token': '725dd8b94364a3081b36b914776cb439'
+    }
+
+    # Авторизация
+    response = session.post(login_url, data=login_data, verify=False)
+
+    if not response.ok:
+        raise Exception("Ошибка авторизации в phpMyAdmin.")
+
+    # Выполнение SQL-запроса
+    sql_url = "https://94.250.252.49:1501/WP5UPKs85N92C7Z1/phpmyadmin/index.php"
+    sql_data = {
+        'db': config.dbname_mysql,
+        'table': '',
+        'sql_query': sql_query,
+        'token': '725dd8b94364a3081b36b914776cb439',
+        'target': 'db_sql.php',
+        'server': '4',
+    }
+
+    sql_response = session.post(sql_url, data=sql_data, verify=False)
+
+    if not sql_response.ok:
+        raise Exception(f"Ошибка выполнения HTTP-запроса: {sql_response.status_code}")
+
+    # Анализ содержимого ответа
+    response_text = sql_response.text
+    if "error" in response_text.lower() or "syntax" in response_text.lower() or "does not exist" in response_text.lower():
+        # Парсим HTML для более точного сообщения об ошибке
+        soup = BeautifulSoup(response_text, 'html.parser')
+        error_message = soup.find('div', {'class': 'error'}).text if soup.find('div', {'class': 'error'}) else "Неизвестная ошибка SQL"
+        raise Exception(f"Ошибка выполнения SQL-запроса: {error_message.strip()}")
+
+    return "OK"
+
+
+
+
+
+url_wordstat = "https://api.direct.yandex.com/json/v5/reports"
+
+
+def send_wordstat(text):
+    parser = get_parser(1, 10) # 4й уже сегодня не подходит 11.11
+    geo = []
+    data = [text]
+    response = parser.createReport(data, geo)
+
+    if 'data' in response:
+        reportID = response['data']
+        #print('>>> Сообщение от чата с ID = ', reportID)
+    else:
+        raise Exception('Не удалось сохранить отчет', response)     
+
+    reportList = parser.getReportList()
+    if 'data' in reportList:
+        lastReport = reportList['data'][len(reportList['data'])-1]
+        i = 0
+        while lastReport['StatusReport'] != 'Done':
+            print('>>> Ожидаем новый отчет, ждем ... ('+str(i)+')')
+            time.sleep(5)
+            reportList = parser.getReportList()
+            lastReport = reportList['data'][len(reportList['data'])-1]
+            i+=1
+            break
+        print('>>> Отчет ID = ', lastReport['ReportID'], ' завершен!')
+    else:
+        raise Exception('Не удалось получить список отчетов с сервера', reportList)
+
+    report = parser.readReport(reportID)
+    #print('>>> Подготовка отчета')
+    if 'data' in report:
+        print('>>> report2')
+        # Загрузка страниц в формате HTML (если report содержит флаг для этого)
+        #parser.saveReportToTxt(report, True, file_name)
+        #print('>>> Репорты сохранены в файл!')
+    else:
+        raise Exception('Не удалось получить список отчетов', report)
+
+
+    # Удаление отчета
+    report2 = parser.deleteReport(reportID)
+    if 'data' in report2:
+        print('>>> Отчет с ID = ', reportID, ' успешно удален!')
+    else:
+        raise Exception('Не удалось удалить отчет', report2)
+
+    searched = []
+    if len(report['data'][0]['SearchedWith']) > 1: 
+        i = 1
+        for d in report['data'][0]['SearchedWith']:
+            if i > 1:
+                searched.append(d['Phrase'])
+                if i == 3:
+                    break
+            i += 1
+    
+    #if len(report['data'][0]['SearchedAlso']) > 0:
+    #    i = 1
+    #    for d in report['data'][0]['SearchedAlso']:
+    #        searched.append(d['Phrase'])
+                    
+    return searched
+
+
+
+
+url_rapidapi = "https://cheapest-gpt-4-turbo-gpt-4-vision-chatgpt-openai-ai-api.p.rapidapi.com/v1/chat/completions"
+
+
+def send_tags_ai(text):
+
+    try:
+        rapidapi = get_rapidapi(0, 0)
+        
+        payload = {
+            "messages": [
+                {"role": "system", "content": "вы SEO-специалист"},
+                {"role": "user", "content": text}
+            ],
+            "model": "gpt-4o",
+            "max_tokens": 200,
+            "temperature": 0.6
+        }
+        headers = {
+            "x-rapidapi-key": rapidapi,
+            "x-rapidapi-host": "cheapest-gpt-4-turbo-gpt-4-vision-chatgpt-openai-ai-api.p.rapidapi.com",
+            "Content-Type": "application/json"
+        }
+
+        response = requests.post(url_rapidapi, json=payload, headers=headers)
+        data = response.json()
+
+        if response.status_code != 200:
+            print(f"Error rapidapi: Received status code {response.status_code}")
+            print(f"400 Error rapidapi details: {response.text}")
+
+            return None
+        else:
+            print("rapidapi successful")
+
+        #print(f"response.choices[0].message.content:\n"+ data['choices'][0]['message']['content'])
+        return data['choices'][0]['message']['content'] #, response.usage.total_tokens
+    except Exception as e:
+        logging.error(e)
+
+
+
+def send_tags_ai2(text):
+
+    try:
+        rapidapi = get_rapidapi(0, 0)
+        
+        payload = {
+            "messages": [
+                {"role": "system", "content": "вы покупатель товаров"},
+                {"role": "user", "content": text}
+            ],
+            "model": "gpt-4o",
+            "max_tokens": 200,
+            "temperature": 0.8
+        }
+        headers = {
+            "x-rapidapi-key": rapidapi,
+            "x-rapidapi-host": "cheapest-gpt-4-turbo-gpt-4-vision-chatgpt-openai-ai-api.p.rapidapi.com",
+            "Content-Type": "application/json"
+        }
+
+        response = requests.post(url_rapidapi, json=payload, headers=headers)
+        data = response.json()
+
+        if response.status_code != 200:
+            print(f"Error rapidapi: Received status code {response.status_code}")
+            print(f"400 Error rapidapi details: {response.text}")
+
+            return None
+        else:
+            print("rapidapi successful")
+
+        #print(f"response.choices[0].message.content:\n"+ data['choices'][0]['message']['content'])
+        return data['choices'][0]['message']['content'] #, response.usage.total_tokens
+    except Exception as e:
+        logging.error(e)
+
+
+
+def get_tags(record):
+    text_tags_arr = []
+    categories = record.category_name.split('/')
+    names = clean_text(record.element_name)
+
+    cleaned_names = ' '.join(names.split())
+    #print("cleaned_names\n" + cleaned_names)
+
+    first_two_long_words = ' '.join([word for word in cleaned_names.split() if len(word) > 2][:2])
+    #print("first_two_long_words\n" + first_two_long_words)
+
+    result = send_wordstat(first_two_long_words)
+    for tag in result:
+                if tag not in text_tags_arr:
+                    text_tags_arr.append(tag)
+
+    for element in categories:
+        # Игнорируем пустые элементы
+        if element.strip():
+            # Вызываем функцию send_wordstat для каждого элемента
+
+            names = clean_text(element)
+            cleaned_element = ' '.join(names.split())
+            first_four_words = ' '.join(cleaned_element.split()[:4])
+
+            if first_four_words:
+                result = send_wordstat(first_four_words)
+                
+                # Добавляем полученные данные в text_tags_arr, если их там нет
+                for tag in result:
+                    if tag not in text_tags_arr:
+                        text_tags_arr.append(tag)
+
+    #text_tags_arr = send_wordstat(clean_text(record.element_name))
+
+    text_tags = ", ".join(text_tags_arr)
+    #element_id = record.element_id
+    text = f"element_name: {clean_text(record.element_name)}, category_name: {clean_text(record.category_name)}, element_description: {clean_text(record.element_description)}"
+    # Преобразуем данные в строку, очищая теги HTML и ссылки
+    #text = ", ".join([f"{key}: {clean_text(value)}" for key, value in record.dict().items() if key != "element_id"])
+
+    n = max(5, 10 - len(text_tags_arr))
+    prompt_ai = prompt_ai0.format(n=n, text_tags=text_tags) + text
+    response_text = send_tags_ai(prompt_ai)
+
+    text_tags = response_text
+
+    return text_tags
+
+
+
+
+# Переменные для сессии Selenium
+selenium_session = {"driver": None, "token": None}
+
+
+def initialize_selenium_session():
+    """Инициализирует сессию Selenium и возвращает объект с токенами."""
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--ignore-certificate-errors")
+    options.add_argument("--allow-insecure-localhost")
+    options.add_argument("--disable-web-security")
+    options.add_argument("--disable-extensions")
+
+    driver = webdriver.Chrome(service=Service(), options=options)
+    driver.maximize_window()
+
+    try:
+        driver.get("https://94.250.252.49:1501/WP5UPKs85N92C7Z1/phpmyadmin/index.php")
+        wait = WebDriverWait(driver, 1)
+
+        time.sleep(1)
+        # Вводим имя пользователя
+        #username_input = wait.until(EC.presence_of_element_located((By.ID, "input_username")))
+        try:
+            username_input = driver.find_element(By.ID, "input_username")
+        except NoSuchElementException:
+            username_input = wait.until(EC.presence_of_element_located((By.ID, "input_username")))
+        username_input.send_keys(config.user_mysql)
+
+        # Вводим пароль
+        #password_input = wait.until(EC.presence_of_element_located((By.ID, "input_password")))
+        try:
+            password_input = driver.find_element(By.ID, "input_password")
+        except NoSuchElementException:
+            password_input = wait.until(EC.presence_of_element_located((By.ID, "input_password")))
+        password_input.send_keys(config.password_mysql)
+
+        # Выбираем сервер
+        #server_select = wait.until(EC.presence_of_element_located((By.ID, "select_server")))
+        try:
+            server_select = driver.find_element(By.ID, "select_server")
+        except NoSuchElementException:
+            server_select = wait.until(EC.presence_of_element_located((By.ID, "select_server")))
+        select = Select(server_select)
+        select.select_by_value("4")
+
+        # Нажимаем "Вперёд"
+        #submit_button = wait.until(EC.element_to_be_clickable((By.ID, "input_go")))
+        try:
+            submit_button = driver.find_element(By.ID, "input_go")
+        except NoSuchElementException:
+            submit_button = wait.until(EC.presence_of_element_located((By.ID, "input_go")))
+        submit_button.click()
+
+        # Извлечение токена
+        time.sleep(1)
+        parsed_url = urlparse(driver.current_url)
+        token = parse_qs(parsed_url.query).get("token", [None])[0]
+
+        if not token:
+            raise Exception("Токен не найден")
+
+        selenium_session["driver"] = driver
+        selenium_session["token"] = token
+
+    except Exception as e:
+        driver.quit()
+        raise Exception(f"Ошибка инициализации Selenium: {e}")
+
+
+
+def execute_sql(sql_query):
+    """Выполняет SQL-запрос в текущей Selenium-сессии."""
+    driver = selenium_session["driver"]
+    token = selenium_session["token"]
+
+    if not driver or not token:
+        raise Exception("Сессия Selenium не инициализирована")
+
+    try:
+        sql_page_url = f"https://94.250.252.49:1501/WP5UPKs85N92C7Z1/phpmyadmin/tbl_sql.php?db=mspak-pro&table=chililab_comments_comments&server=4&target=&token={token}"
+        driver.get(sql_page_url)
+
+        sql_input_field = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, '//*[@id="sqlquerycontainer"]/div[1]'))
+        )
+        sql_input_field.click()
+
+        actions = ActionChains(driver)
+        actions.key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL).send_keys(Keys.DELETE).perform()
+
+        for char in sql_query:
+            actions.send_keys(char)
+        actions.perform()
+
+        driver.find_element(By.ID, "button_submit_query").click()
+
+        time.sleep(1)
+        WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CLASS_NAME, "success")))
+        return "OK"
+
+    except Exception as e:
+        # Проверяем, нужно ли переподключение
+        if "Invalid token" in str(e) or "expired" in str(e):
+            selenium_session["driver"] = None
+            selenium_session["token"] = None
+            raise Exception("Сессия или токен недействительны, требуется повторное подключение")
+        else:
+            return str(e)
+
+
+def ensure_session_valid():
+    """Убедиться, что сессия активна, и при необходимости инициализировать новую."""
+    if selenium_session["driver"] is None or selenium_session["token"] is None:
+        initialize_selenium_session()
+
+
+
+def execute_sql_with_selenium(sql_query):
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")  # Уберите "--headless", если хотите увидеть браузер
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    #driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+    #options = Options()
+    options.add_argument("--ignore-certificate-errors")
+    options.add_argument("--allow-insecure-localhost")  # Для локальных соединений
+    options.add_argument("--disable-web-security")      # Отключить проверки сертификатов
+    options.add_argument("--disable-extensions")
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    driver.maximize_window()
+
+    try:
+        # Открываем страницу
+        driver.get("https://94.250.252.49:1501/WP5UPKs85N92C7Z1/phpmyadmin/index.php")
+        wait = WebDriverWait(driver, 1)
+
+        time.sleep(1)
+        # Вводим имя пользователя
+        #username_input = wait.until(EC.presence_of_element_located((By.ID, "input_username")))
+        try:
+            username_input = driver.find_element(By.ID, "input_username")
+        except NoSuchElementException:
+            username_input = wait.until(EC.presence_of_element_located((By.ID, "input_username")))
+        username_input.send_keys(config.user_mysql)
+
+        # Вводим пароль
+        #password_input = wait.until(EC.presence_of_element_located((By.ID, "input_password")))
+        try:
+            password_input = driver.find_element(By.ID, "input_password")
+        except NoSuchElementException:
+            password_input = wait.until(EC.presence_of_element_located((By.ID, "input_password")))
+        password_input.send_keys(config.password_mysql)
+
+        # Выбираем сервер
+        #server_select = wait.until(EC.presence_of_element_located((By.ID, "select_server")))
+        try:
+            server_select = driver.find_element(By.ID, "select_server")
+        except NoSuchElementException:
+            server_select = wait.until(EC.presence_of_element_located((By.ID, "select_server")))
+        select = Select(server_select)
+        select.select_by_value("4")
+
+        # Нажимаем "Вперёд"
+        #submit_button = wait.until(EC.element_to_be_clickable((By.ID, "input_go")))
+        try:
+            submit_button = driver.find_element(By.ID, "input_go")
+        except NoSuchElementException:
+            submit_button = wait.until(EC.presence_of_element_located((By.ID, "input_go")))
+        submit_button.click()
+
+        time.sleep(1)
+
+        current_url = driver.current_url
+
+        # Извлекаем токены из текущего URL
+        parsed_url = urlparse(current_url)
+        query_params = parse_qs(parsed_url.query)
+
+        # Извлекаем значения токенов из query параметров
+        first_token = query_params.get('token', [None])[0]  # Первый токен
+
+        sql_page_url = f"https://94.250.252.49:1501/WP5UPKs85N92C7Z1/phpmyadmin/tbl_sql.php?db=mspak-pro&table=chililab_comments_comments&server=4&target=&token={first_token}#PMAURL-0:tbl_sql.php?db=mspak-pro&table=chililab_comments_comments&server=4&target=&token={first_token}"
+        #print(f"Текущий URL: \n{sql_page_url}")
+
+        driver.get(sql_page_url)
+
+        sql_input_field = WebDriverWait(driver, 1).until(
+            EC.element_to_be_clickable((By.XPATH, '//*[@id="sqlquerycontainer"]/div[1]'))
+        )
+        sql_input_field.click()
+        WebDriverWait(driver, 1).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "CodeMirror-focused"))
+        )
+        actions = ActionChains(driver)
+        actions.key_down(Keys.CONTROL).send_keys('a').key_up(Keys.CONTROL).send_keys(Keys.DELETE).perform()
+        #sql_input_field.send_keys(sql_query)
+        for char in sql_query:
+            actions.send_keys(char)
+        actions.perform()
+
+        print(f"SQL: \n{sql_query}")
+
+        button = WebDriverWait(driver, 2).until(
+            EC.element_to_be_clickable((By.ID, "button_submit_query"))
+        )
+        button.click()
+
+        # Пауза для выполнения запроса
+        time.sleep(1)
+
+        # Получаем результат
+        success_element = WebDriverWait(driver, 1).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "success"))
+        )
+
+        return "OK", "OK"
+
+    except Exception as e:
+        return "error", str(e)
+
+    finally:
+        driver.quit()
+
+
+
+
+
+
+
+
+
+
+# Функция для обработки объектов типа datetime
+def json_serial(obj):
+    # Преобразование объектов типа datetime
+    if isinstance(obj, (datetime, date)):
+        return obj.strftime('%Y-%m-%d')  # Преобразуем дату в строку
+    # Преобразование объектов типа Decimal
+    if isinstance(obj, Decimal):
+        return float(obj)  # Преобразуем в число с плавающей точкой
+    # Если тип не поддерживается
+    raise TypeError(f"Type {type(obj)} not serializable")
+
+
+
+# Удаление HTML тегов и ссылок
+def clean_text(text):
+    # Удаляем HTML теги
+    text_without_html = re.sub(r'<.*?>', ' ', text)
+    # Удаляем URL ссылки
+    text_without_urls = re.sub(r'http[s]?://\S+', ' ', text_without_html)
+    # Оставляем только разрешенные символы
+    allowed_chars_pattern = r"[^A-Za-zА-Яа-яЁёґҐєЄіІїЇұҰәӘөӨһҺөӨқҚқҚңҢэЭүҮ ]"
+    text_cleaned = re.sub(allowed_chars_pattern, " ", text_without_urls)
+    
+    # Проверка на наличие символов, не удовлетворяющих правилам (например, запятых или кавычек в неправильных местах)
+    return text_cleaned
+
+
+# Модели данных с использованием Pydantic
+class ElementData(BaseModel):
+    element_id: int
+    element_name: str
+    category_name: str
+    element_description: str
+
+class ResponseData(BaseModel):
+    message: str
+    data: Dict[int, str]
+
+
+@app.post("/send_comments", response_model=ResponseData)
+async def send_comments(data: List[ElementData]):
+    try:
+        # Словарь для хранения ответов для каждой записи по её идентификатору element_id
+        results = {}
+        results2 = {}
+
+        for record in data:
+            element_id = record.element_id
+            #response_text = get_tags(record)
+            #results[element_id] = response_text
+
+            text = f"element_name: {clean_text(record.element_name)}, category_name: {clean_text(record.category_name)}, element_description: {clean_text(record.element_description)}"
+            
+            prompt_comment_make = make_prompt()
+
+            response_text2 = ""
+            prompt_comment_make2 = prompt_comment_make + text + add_prompt
+            response_text2 = send_tags_ai2(prompt_comment_make2)
+            response_text2 = response_text2.strip()
+            response_text2 = response_text2.replace("'''", "'")
+            response_text2 = response_text2.replace("json", "")
+            if response_text2:
+                try:
+                    json_object = json.loads(response_text2)
+
+                    #results[element_id] = response_text2
+                    results[element_id] = json_object
+
+                except json.JSONDecodeError as e:
+                    results[element_id] = ""
+            else:
+                results[element_id] = ""
+
+            print(f"Ответ:\n{response_text2}")
+
+            #response_text = send_tags_ai2(prompt_comment_make + text)
+            #results[element_id] = response_text
+
+            #if response_text is None:
+            # Обработка ошибки или дефолтное значение
+            #    print(f"Ошибка:\n{response_text}")
+            #    results[element_id] = ""
+    
+            #response_text = send_tags_ai2(prompt_comment + text)
+            #results2[element_id] = response_text
+
+        # Возвращаем результат с созданными тегами
+        return JSONResponse(
+            content={"message": "Комментарии успешно созданы для записей!", 
+                     "data": results,
+                     # "data2": results2
+                     },
+            status_code=200
+        )
+
+    except Exception as e:
+        logging.error(f"Ошибка при обработке запроса: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+@app.post("/send_tags", response_model=ResponseData)
+async def send_tags(data: List[ElementData]):
+    try:
+        # Словарь для хранения ответов для каждой записи по её идентификатору element_id
+        results = {}
+        results2 = {}
+
+        for record in data:
+            element_id = record.element_id
+            response_text = get_tags(record)
+            results[element_id] = response_text
+
+            #text = f"element_name: {clean_text(record.element_name)}, category_name: {clean_text(record.category_name)}, element_description: {clean_text(record.element_description)}"
+            #response_text = send_tags_ai(prompt_ai2+text)
+            #results2[element_id] = response_text
+
+        # Возвращаем результат с созданными тегами
+        return JSONResponse(
+            content={"message": "Теги успешно созданы для записей!", 
+                     "data": results,
+                     "data2": results2},
+            status_code=200
+        )
+
+    except Exception as e:
+        logging.error(f"Ошибка при обработке запроса: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.post("/insert_comment2")
+async def insert_comment2(comment: CommentData):
+    # Формирование SQL-запроса
+    sql_query = f"""INSERT INTO chililab_comments_comments 
+(ID, ACTIVE, MODERATED, NAME, TEXT, CHILI_USER_CODE, USER_ID, URL, SITE_ID, RATING, PARENT_ID, LEFT_MARGIN, RIGHT_MARGIN, DEPTH_LEVEL, CHANNEL_EVENT_SEND, CREATED) 
+VALUES 
+({comment.ID}, '{comment.ACTIVE}', '{comment.MODERATED}', '{comment.NAME}', '{comment.TEXT}', 
+'{comment.CHILI_USER_CODE}', {comment.USER_ID}, '{comment.URL}', '{comment.SITE_ID}', {comment.RATING}, 
+{comment.PARENT_ID}, {comment.LEFT_MARGIN}, {comment.RIGHT_MARGIN}, {comment.DEPTH_LEVEL}, 
+'{comment.CHANNEL_EVENT_SEND}', '{comment.CREATED}');"""
+    try:
+        response_text = login_phpmyadmin(sql_query)
+        return {"message": "Запрос выполнен успешно", "response": response_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка выполнения запроса: {str(e)}")
+
+
+@app.post("/insert_comment")
+async def insert_comment(comment: CommentData):
+    # Формирование SQL-запроса
+    comment.CREATED = comment.CREATED.replace("T", " ").split(".")[0]
+    comment.URL = comment.URL.replace("https://mspak.pro", "")
+    
+    sql_query = f"""
+    INSERT INTO chililab_comments_comments 
+    (ID, ACTIVE, MODERATED, NAME, TEXT, CHILI_USER_CODE, USER_ID, URL, SITE_ID, RATING, PARENT_ID, LEFT_MARGIN, RIGHT_MARGIN, DEPTH_LEVEL, CHANNEL_EVENT_SEND, CREATED) 
+    VALUES 
+    ({comment.ID}, '{comment.ACTIVE}', '{comment.MODERATED}', '{comment.NAME}', '{comment.TEXT}', 
+    '{comment.CHILI_USER_CODE}', {comment.USER_ID}, '{comment.URL}', '{comment.SITE_ID}', {comment.RATING}, 
+    {comment.PARENT_ID}, {comment.LEFT_MARGIN}, {comment.RIGHT_MARGIN}, {comment.DEPTH_LEVEL}, 
+    '{comment.CHANNEL_EVENT_SEND}', STR_TO_DATE('{comment.CREATED}', '%Y-%m-%d %H:%i:%s'));
+    """
+    try:
+        status, response = execute_sql_with_selenium(sql_query)
+        if status == "OK":
+            print("Запрос выполнен успешно:")
+            print(response)
+        else:
+            print("Ошибка выполнения запроса:")
+            print(response)
+        return {"message": status, "response": response}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ошибка выполнения запроса: {str(e)}")
+
+
+
+@app.post("/insert_comments")
+async def insert_comments(comments: list[CommentData]):
+    responses = []
+
+    for comment in comments:
+        try:
+            ensure_session_valid()
+
+            # Подготовка данных
+            comment.CREATED = comment.CREATED.replace("T", " ").split(".")[0]
+            comment.URL = comment.URL.replace("https://mspak.pro", "")
+
+            sql_query = f"""
+            INSERT INTO chililab_comments_comments 
+            (ID, ACTIVE, MODERATED, NAME, TEXT, CHILI_USER_CODE, USER_ID, URL, SITE_ID, RATING, PARENT_ID, LEFT_MARGIN, RIGHT_MARGIN, DEPTH_LEVEL, CHANNEL_EVENT_SEND, CREATED) 
+            VALUES 
+            ({comment.ID}, '{comment.ACTIVE}', '{comment.MODERATED}', '{comment.NAME}', '{comment.TEXT}', 
+            '{comment.CHILI_USER_CODE}', {comment.USER_ID}, '{comment.URL}', '{comment.SITE_ID}', {comment.RATING}, 
+            {comment.PARENT_ID}, {comment.LEFT_MARGIN}, {comment.RIGHT_MARGIN}, {comment.DEPTH_LEVEL}, 
+            '{comment.CHANNEL_EVENT_SEND}', STR_TO_DATE('{comment.CREATED}', '%Y-%m-%d %H:%i:%s'));
+            """
+
+            # Выполнение SQL-запроса
+            status = execute_sql(sql_query)
+            responses.append({"ID": comment.ID, "status": status})
+
+        except Exception as e:
+            if "Сессия или токен недействительны" in str(e):
+                try:
+                    initialize_selenium_session()
+                    status = execute_sql(sql_query)
+                    responses.append({"ID": comment.ID, "status": status})
+                except Exception as retry_exception:
+                    responses.append({"ID": comment.ID, "status": f"Error: {str(retry_exception)}"})
+            else:
+                responses.append({"ID": comment.ID, "status": f"Error: {str(e)}"})
+
+    return responses
+
+
+# маршруты и функции обработчиков
+
+if __name__ == '__main__':
+    uvicorn.run(app, host="0.0.0.0", port=5000)
