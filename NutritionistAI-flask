@@ -1,0 +1,156 @@
+# -*- coding: utf-8 -*-
+
+from flask import Flask, jsonify, Response, request
+import json
+import psycopg2
+import config
+from datetime import datetime, date, timedelta
+import pytz
+from decimal import Decimal
+
+app = Flask(__name__)
+
+def get_db_connection2():
+    conn = psycopg2.connect(
+        host=config.host_pg,
+        database=config.dbname_pg,
+        user=config.username_pg,
+        password=config.password_pg
+    )
+    return conn
+
+
+
+def get_data_for_points():
+    conn = get_db_connection2()
+    cursor = conn.cursor()
+
+    # Выполняем запрос к базе данных
+    cursor.execute("SELECT point_id, point_date, point_text, point_unit, point_tag, point_table, point_db FROM points_tb ORDER BY point_tag, point_text")
+    rows = cursor.fetchall()
+
+    # rows = json.loads(rows)
+    # Преобразуем результат в формат JSON
+    data = []
+    for row in rows:
+        data.append({
+            "point_id": row[0],
+            "point_date": row[1],
+            "point_text": row[2],
+            "point_unit": row[3],
+            "point_tag": row[4],
+            "point_table": row[5],
+            "point_db": row[6]
+        })
+    
+    cursor.close()
+    conn.close()
+
+    return data
+
+
+def send_data_to_points(data):
+    conn = get_db_connection2()
+    cursor = conn.cursor()
+
+    for item in data:
+        try:
+            # Преобразуем пустые строки в None для тех полей, которые могут быть пустыми
+            point_id = item['point_id'] if item['point_id'] != '' else None
+            #question_date = item['question_date'] if item['question_date'] != '' else None
+
+
+            # Логируем данные перед вставкой
+            print(f"Вставляем данные: {item}")
+
+            # SQL-запрос для вставки данных
+            if point_id:
+                    cursor.execute("""
+                        INSERT INTO points_tb (
+                            point_id, point_text, point_unit, point_tag, point_table, point_db
+                        ) VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (point_id) 
+                        DO UPDATE SET 
+                            point_text = EXCLUDED.point_text,
+                            point_unit = EXCLUDED.point_unit,
+                            point_tag = EXCLUDED.point_tag,
+                            point_table = EXCLUDED.point_table,
+                            point_db = EXCLUDED.point_db
+                    """, (
+                        point_id,  # BIGSERIAL (может быть None, если генерируется автоматически)
+                        item['point_text'],
+                        item['point_unit'],
+                        item['point_tag'],
+                        item['point_table'],
+                        item['point_db']
+                    ))
+            else:
+                cursor.execute("""
+                        INSERT INTO points_tb (
+                            point_text, point_unit, point_tag, point_table, point_db
+                        ) VALUES (%s, %s, %s, %s, %s)
+                    """, (
+                        item['point_text'],
+                        item['point_unit'],
+                        item['point_tag'],
+                        item['point_table'],
+                        item['point_db']
+                    ))
+                
+        except Exception as e:
+            # Логируем ошибку и выполняем откат
+            print(f"Ошибка при вставке данных: {e}")
+            conn.rollback()
+
+    conn.commit()  # Сохраняем изменения
+    cursor.close()
+    conn.close()
+
+
+
+
+
+# Функция для обработки объектов типа datetime
+def json_serial(obj):
+    # Преобразование объектов типа datetime
+    if isinstance(obj, (datetime, date)):
+        return obj.strftime('%Y-%m-%d')  # Преобразуем дату в строку
+    # Преобразование объектов типа Decimal
+    if isinstance(obj, Decimal):
+        return float(obj)  # Преобразуем в число с плавающей точкой
+    # Если тип не поддерживается
+    raise TypeError(f"Type {type(obj)} not serializable")
+
+
+@app.route('/get_points', methods=['GET'])
+def get_points():
+    data = get_data_for_points()
+    # Используем json.dumps с параметром default для преобразования datetime
+    response_json = json.dumps(data, ensure_ascii=False, default=json_serial)
+    
+    return Response(response_json, content_type="application/json; charset=utf-8")
+
+# Маршрут для получения данных через POST-запрос
+@app.route('/send_points', methods=['POST'])
+def send_points():
+    try:
+        # Получаем JSON данные из тела запроса
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'Данные отсутствуют или неверный формат'}), 400
+        
+        # Передаем данные для записи в PostgreSQL
+        send_data_to_points(data)
+        
+        return jsonify({'message': 'Данные успешно добавлены в базу данных!'
+            #'data': data  # Возвращаем сами данные
+            }), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5500)
