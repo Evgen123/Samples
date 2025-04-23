@@ -1,0 +1,1879 @@
+from asyncio.windows_events import NULL
+from aiogram import types, F, Bot
+from misc import dp#, db_pool
+import misc 
+from aiogram.types import Message, Audio, Voice, BotCommandScopeDefault, BotCommandScopeChat, InputMediaPhoto, InputFile
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineQuery
+from aiogram.methods import SendChatAction
+
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.filters import Command
+from aiogram.types.input_file import FSInputFile
+from aiogram.types.callback_query import CallbackQuery
+from aiogram.filters.callback_data import CallbackData
+
+import io
+import os
+import config
+import prompts
+import utils
+import openai
+#import assemblyai as aai
+from openai import AsyncOpenAI
+
+import kb
+import text
+
+from aiogram import flags
+from aiogram.fsm.context import FSMContext
+
+from states import Gen
+
+import whisper
+
+from pathlib import Path
+
+import requests
+import aiohttp
+
+import time
+
+import random
+import numpy as np
+from io import BytesIO
+from PIL import Image
+
+import asyncio
+
+from datetime import date
+from datetime import datetime
+
+import math
+import re
+import json
+
+import openpyxl
+from openpyxl import Workbook
+
+#import prompts
+import sqls
+
+bot_token = config.BOT_TOKEN
+
+#openai.api_key = config.openAI_TOKEN
+#client = AsyncOpenAI(api_key=config.openAI_TOKEN)
+
+model = whisper.load_model("small")
+
+
+class MyCallback(CallbackData, prefix="my"):
+    what: str
+    keys: str
+  
+class MyCallback2(CallbackData, prefix="my"):
+    what: str
+    num: int
+
+class MyCallback3(CallbackData, prefix="my"):
+    what: str
+    num_key: int
+    num_page: int
+    searched_num: int
+    
+
+
+def what_stage(if_yes):
+    #if_yes = await sqls.insert_users_semantik(user_id)
+    if if_yes['user_id']:
+        if if_yes['user_name']:
+            if if_yes['user_gender']:
+                if if_yes['user_city']:
+                    if if_yes['user_birth']:
+                        if if_yes['user_interests']:
+                            if if_yes['user_meets']:
+                                if if_yes['user_photos']:
+                                    return 8 #можно проходить опрос
+                                else:
+                                    return 7 #не выслал ни одной фотографии
+                            else:
+                                return 6 #не ввел свои желаемые встречи
+                        else:
+                            return 5 #не ввел свои интересы
+                    else:
+                        return 4 #не ввел дату рождения              
+                else:
+                    return 3 #не ввел город
+            else:
+                return 2 #не ввел пол
+        else:
+            return 1 #не ввел свое имя
+    else:
+        return 0 #если не создан прользователь в users_tb
+
+
+
+async def fill_stage(startStage, msg, state, user_id):
+
+        if_yes = await sqls.get_user_about(user_id, msg.from_user.username)
+        whatStage = what_stage(if_yes) if startStage > 99 else 1
+        whatStage = 0 if startStage == 0 else whatStage
+
+        if whatStage >= 8:
+            if_yes2 = await sqls.get_answers_tb(user_id)
+            
+            if not if_yes2:
+                #await msg.answer(text.greet2.format(name=msg.from_user.full_name), reply_markup=kb.exit_kb2)
+                await msg.answer(text.greet_question.format(name=if_yes['user_name']), reply_markup=kb.menu2)
+                await state.set_state(Gen.select_menu2)
+            else:
+                if_yes3 = await sqls.get_next_question(user_id, "Быстрые")
+                if if_yes3:
+                    await msg.answer(text.greet_question1.format(name=if_yes['user_name']), reply_markup=kb.menu2)
+                    await state.set_state(Gen.select_menu2)
+                else:
+                    #await state.update_data(project_name=if_yes2['project_name'], idea=if_yes2['idea'], site=if_yes2['site'], keys=if_yes2['keys'], minus=if_yes2['minus'], plus=if_yes2['plus'], xlsx=if_yes2['xlsx'])
+                    user_name = if_yes['user_name'] if if_yes['user_name'] else "-"
+                    user_gender = if_yes['user_gender'] if if_yes['user_gender'] else "-"
+                    user_city = if_yes['user_city'] if if_yes['user_city'] else "-"
+                    user_birth = if_yes['user_birth'] if if_yes['user_birth'] else "-"
+                    user_zodiak = if_yes['user_zodiak'] if if_yes['user_zodiak'] else "-"
+                    user_interests = if_yes['user_interests'] if if_yes['user_interests'] else "-"
+                    user_meets = if_yes['user_meets'] if if_yes['user_meets'] else "-"
+                    user_link_facebook = if_yes['user_link_facebook'] if if_yes['user_link_facebook'] else "-"
+                    user_link_instagram = if_yes['user_link_instagram'] if if_yes['user_link_instagram'] else "-"
+                    user_link_linkenin = if_yes['user_link_linkenin'] if if_yes['user_link_linkenin'] else "-"
+                    
+                    #keys = ', '.join(if_yes["keys"]) if if_yes['keys'] else "-"
+
+                    user_about = text.cre_profil.format(user_name=user_name, user_gender=user_gender, user_city=user_city, user_birth=user_birth, user_zodiak=user_zodiak,  user_interests=user_interests, user_meets=user_meets, user_link_facebook=user_link_facebook, user_link_instagram=user_link_instagram, user_link_linkenin=user_link_linkenin) 
+                    await msg.answer(user_about)  
+                    await msg.answer(text.greet_pay.format(name=if_yes['user_name']), reply_markup=kb.menu1) 
+                    await state.set_state(Gen.select_menu1)  
+        elif whatStage == 0: 
+            await msg.answer(text.cre_user_audio) 
+            await state.set_state(Gen.cre_user_audio)  
+
+        elif whatStage == 1: 
+            user_name = if_yes['user_name']
+            next_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Далее ▶️", callback_data="cre_user_name")]], resize_keyboard=True)
+            if user_name:
+                await msg.answer(text.cre_user_name2.format(name=user_name), reply_markup=next_kb)
+            else:
+                await msg.answer(text.cre_user_name) 
+            await state.set_state(Gen.cre_user_name)  
+        elif whatStage == 2: 
+            user_gender = if_yes['user_gender']
+            next_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Далее ▶️", callback_data="cre_user_gender")]], resize_keyboard=True)
+            if user_gender:
+                await msg.answer(text.cre_user_gender2.format(gender=user_gender), reply_markup=next_kb)
+            else:
+                await msg.answer(text.cre_user_gender) 
+            await state.set_state(Gen.cre_user_gender)  
+        elif whatStage == 3: 
+            user_city = if_yes['user_city']
+            next_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Далее ▶️", callback_data="cre_user_city")]], resize_keyboard=True)
+            if user_city:
+                await msg.answer(text.cre_user_city2.format(city=user_city), reply_markup=next_kb)
+            else:
+                await msg.answer(text.cre_user_city) 
+            await state.set_state(Gen.cre_user_city)  
+        elif whatStage == 4: 
+            user_birth = if_yes['user_birth']
+            next_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Далее ▶️", callback_data="cre_user_birth")]], resize_keyboard=True)
+            if user_birth:
+                await msg.answer(text.cre_user_birth2.format(date=user_birth), reply_markup=next_kb)
+            else:
+                await msg.answer(text.cre_user_birth) 
+            await state.set_state(Gen.cre_user_birth) 
+        elif whatStage == 5: 
+            user_interests = if_yes['user_interests']
+            next_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Далее ▶️", callback_data="cre_user_interests")]], resize_keyboard=True)
+            if user_interests:
+                await msg.answer(text.cre_user_interests2.format(name=user_interests), reply_markup=next_kb)
+            else:
+                await msg.answer(text.cre_user_interests) 
+            await state.set_state(Gen.cre_user_interests) 
+        elif whatStage == 6: 
+            user_meets = if_yes['user_meets']
+            next_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Далее ▶️", callback_data="cre_user_meets")]], resize_keyboard=True)
+            if user_meets:
+                await msg.answer(text.cre_user_meets2.format(name=user_meets), reply_markup=next_kb)
+            else:
+                await msg.answer(text.cre_user_meets) 
+            await state.set_state(Gen.cre_user_meets) 
+        elif whatStage == 7: 
+            user_photos = if_yes['user_photos']
+            if user_photos:
+                await msg.answer(text.cre_user_photos2)
+            else:
+                await msg.answer(text.cre_user_photos) 
+            await state.set_state(Gen.cre_user_photos) 
+        else:
+            await msg.answer(text.menu, reply_markup=kb.menu1) 
+            await state.set_state(Gen.select_menu1) 
+
+
+# Кнопка для next_event
+def get_next_event():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Дальше ➡️", callback_data="next_event")
+    return builder.as_markup()
+# Обработчик нажатия на кнопку "Дальше ➡️"
+@dp.callback_query(F.data == "next_event")
+async def next_event(clbck: CallbackQuery, state: FSMContext):
+#@dp.callback_query(lambda call: call.data == "cancel_event")
+#async def cancel_event(callback_query: types.CallbackQuery, state: FSMContext):
+    # Сбрасываем состояние, что эквивалентно отмене события
+    current_state = await state.get_state()
+    if current_state == Gen.next_event1.state:
+        await state.set_state(Gen.next_event2)
+        await clbck.message.answer(text.greet_mess2, reply_markup=get_next_event())
+        await clbck.answer(text="Ваш нутрицолог")
+    elif current_state == Gen.next_event2.state:
+        await state.set_state(Gen.next_event3)
+        await clbck.message.answer(text.greet_mess3, reply_markup=get_next_event())
+        await clbck.answer(text="Ваш нутрицолог")
+    elif current_state == Gen.next_event3.state:
+        await state.set_state(Gen.cre_user_message)
+        await clbck.message.answer(text.greet_mess4)
+        await clbck.answer(text="Ваш нутрицолог")
+
+
+@dp.message(Command("start"))
+async def start_handler(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    if msg.from_user.username in config.testers:
+        await bot.set_my_commands(kb.user_commands, scope=BotCommandScopeChat(chat_id=msg.from_user.id))
+    else:
+        # Скрываем меню для других пользователей
+        await bot.set_my_commands([], scope=BotCommandScopeChat(chat_id=msg.from_user.id))
+    
+    user_id = msg.from_user.id
+    if_yes = await sqls.get_user_about(user_id, msg.from_user.username)
+    if if_yes and if_yes['user_name']:
+         full_name_ = if_yes['user_name']
+    else:
+        full_name_ = msg.from_user.full_name
+        if not full_name_:
+                full_name_ = msg.from_user.username
+                if not full_name_:
+                    full_name_ = "Аноним"
+
+    #await msg.answer(text.cre_user_start.format(name=full_name_)) 
+    print(f"start_handler + user_id: {str(user_id)}")
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Дальше ➡️", callback_data="next_event")
+ 
+    await msg.answer(text.greet_mess1, reply_markup=builder.as_markup())
+    
+    await state.set_state(Gen.next_event1)
+
+    # Ждем 10 секунд и проверяем флаг
+    await asyncio.sleep(10)
+    
+    current_state = await state.get_state()
+    
+    if current_state == Gen.next_event1.state:
+        await state.set_state(Gen.next_event2)
+        await msg.answer(text.greet_mess2, reply_markup=builder.as_markup())
+    elif current_state == Gen.next_event2.state:
+        await state.set_state(Gen.next_event3)
+        await msg.answer(text.greet_mess3, reply_markup=builder.as_markup())
+    elif current_state == Gen.next_event3.state:
+        await state.set_state(Gen.cre_user_message)
+        await msg.answer(text.greet_mess4)
+        return
+
+    # Ждем 10 секунд и проверяем флаг
+    await asyncio.sleep(10)
+    
+    current_state = await state.get_state()
+
+    if current_state == Gen.next_event2.state:
+        await state.set_state(Gen.next_event3)
+        await msg.answer(text.greet_mess3, reply_markup=builder.as_markup())
+    elif current_state == Gen.next_event3.state:
+        await state.set_state(Gen.cre_user_message)
+        await msg.answer(text.greet_mess4)
+        return
+
+    await asyncio.sleep(10)
+    
+    current_state = await state.get_state()
+
+    if current_state == Gen.next_event3.state:
+        #await state.set_state(Gen.next_event4)
+        await msg.answer(text.greet_mess4)
+    #elif current_state == Gen.next_event4.state:
+    #    await state.set_state(Gen.cre_user_message)
+    #    return
+
+    #if if_yes and if_yes['user_name']:
+    #    await fill_stage(100, msg, state, user_id)
+    #else:
+    #    await fill_stage(0, msg, state, user_id)
+
+    await state.set_state(Gen.cre_user_message)
+    
+    
+    
+@dp.message(Command("instr"))
+async def start_handler(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+
+    await msg.answer(text.instr)
+
+
+''' 
+@dp.message(F.content_type == "text")
+async def message_handler(msg: Message, bot: Bot):
+  
+    if msg.from_user.username == "Evgenkr":    
+        text_ai = await generate_text(msg.text)   
+        await msg.answer(text_ai)
+
+        audio_file = FSInputFile(await text_to_audio(text_ai))
+        await bot.send_audio(msg.from_user.id, audio_file) 
+'''
+
+#@dp.message("Меню1" in F.text)
+#@dp.message("меню1" in F.text)
+#@dp.message("menu1" in F.text)
+@dp.message(F.text == "Выйти в меню")
+@dp.message(F.text == "◀️ Выйти в меню")
+@dp.message(F.text == "◀️ Выйти /menu1")
+async def menu(msg: Message, state: FSMContext):
+    await state.set_state(Gen.cre_user_message)
+    await msg.answer(text.menu_1, reply_markup=kb.menu1)
+    
+@dp.message(Command("menu1"))
+async def start_handler1(msg: Message, state: FSMContext):
+    await state.set_state(Gen.cre_user_message)
+    await msg.answer(text.menu_1, reply_markup=kb.menu1)
+    
+#@dp.message(F.data == "menu1")
+@dp.callback_query(F.data == "select_menu1")
+async def menu1(clbck: CallbackQuery, state: FSMContext):
+    await state.set_state(Gen.cre_user_message)
+    await clbck.message.answer(text.menu_1, reply_markup=kb.menu1)
+ 
+
+#@dp.message("Меню2" in F.text)
+#@dp.message("меню2" in F.text)
+#@dp.message("menu2" in F.text)
+@dp.message(F.text == "Выйти в меню2")
+@dp.message(F.text == "◀️ Выйти в меню2")
+@dp.message(F.text == "◀️ Выйти в /menu2")
+async def menu2(msg: Message, state: FSMContext):
+    await state.set_state(Gen.cre_user_message)
+    await msg.answer(text.menu_2, reply_markup=kb.menu2)
+    
+@dp.message(Command("menu2"))
+async def start_handler2(msg: Message, state: FSMContext):
+    await state.set_state(Gen.cre_user_message)
+    await msg.answer(text.menu_2, reply_markup=kb.menu2)
+    
+#@dp.message(F.data == "menu2")
+@dp.callback_query(F.data == "select_menu2")
+async def menu2(clbck: CallbackQuery, state: FSMContext):
+    await state.set_state(Gen.cre_user_message)
+    await clbck.message.answer(text.menu_2, reply_markup=kb.menu2)
+ 
+
+'''
+@dp.message(F.content_type == "voice")
+async def process_message(msg: Message, bot: Bot):
+    voice_path = await utils.save_voice_as_mp3(bot, msg.voice)
+    transcripted_voice_text = await utils.audio_to_text(voice_path)
+
+    if transcripted_voice_text:
+        await msg.reply(text=transcripted_voice_text)
+        
+    await msg.answer(text.menu, reply_markup=kb.menu)
+'''
+
+
+# 1.0  user_info
+
+@dp.message(Gen.cre_user_audio)
+@flags.chat_action("typing")
+async def cre_user_audio(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr"]:  
+    if msg.voice:
+            voice_path = await utils.save_voice_as_mp3(bot, msg.voice)
+            result = model.transcribe(voice_path, language='ru')
+            #prompt = prompt_question + await utils.audio_to_text(voice_path)
+            prompt = result["text"]
+    else:
+            prompt = msg.text
+
+    await msg.answer("<b> Вы сказали:</b>\n" + prompt)  
+
+    user_id = msg.from_user.id
+    await sqls.save_message(user_id, prompt)
+    datetime_now = str(datetime.now().timestamp())
+
+    if_yes = await sqls.get_points("Профиль")
+    if if_yes:
+        point_texts = [record['point_text']+" ("+record['point_unit']+")" for record in if_yes]
+        metrics = ', '.join(point_texts)
+
+        #analize_profil = await utils.get_rapidapi(prompts.prompt_profil.format(datetime_now=datetime_now, metrics=metrics, prompt=prompt))
+        analize_profil, total_tokens = await utils.get_rapidapi(prompts.prompt_profil.format(datetime_now=datetime_now, metrics=metrics, prompt=prompt))
+
+        analize_profil = analize_profil.strip()
+        analize_profil = analize_profil.replace("'''", "'")
+        analize_profil = analize_profil.replace("json", "")
+        
+        try:
+            json_object = json.loads(analize_profil)
+            print("analize_profil JSON валидный")
+
+            #date_finish = int(datetime.now().timestamp())
+            # Обновляем запись в базе данных
+            date_finish = int(datetime.now().timestamp())
+
+            s = ""
+            for key, value in json_object.items():
+                print(f"Key: {key}, Value: {value}")
+                s += f"\n{key}:  <b>{value}</b>"
+            #await cursor.execute("UPDATE amo_call SET date_finish = %s, result = %s WHERE id = %s", (date_finish, analize_metrics, record_id))
+            #await conn.commit()
+            user_about = text.cre_profil1.format(user_info=s) 
+            await msg.answer(user_about, reply_markup=kb.menu1)  
+            await msg.answer(text.cre_user_message)  
+            await state.set_state(Gen.cre_user_message)
+
+        except json.JSONDecodeError as e:
+            date_finish = int(datetime.now().timestamp())
+            
+            print(f'400 analize_profil не валидный json: {e}')
+            #analize_metrics = f'400 analize_metrics не валидный: {e}'
+            #await cursor.execute("UPDATE amo_call SET date_finish2 = %s, result2 = %s WHERE id = %s", (date_finish, analize_metrics, record_id))
+            #await conn.commit()
+            #return None
+
+
+@dp.callback_query(F.data == "cre_user_audio")
+async def cre_user_audio(clbck: CallbackQuery, state: FSMContext):
+    await clbck.message.delete()
+
+    await clbck.message.answer(text.cre_user_audio) 
+    await state.set_state(Gen.cre_user_audio)  
+
+
+# 1.1  user_name
+@dp.message(Gen.cre_user_name)
+@flags.chat_action("typing")
+async def cre_user_name(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr"]:  
+    prompt = msg.text 
+    user_id = msg.from_user.id
+    if "Далее ▶️" not in prompt:    
+        await sqls.cre_user_item(user_id, "user_name", prompt)
+    else:
+        await msg.delete()
+    if_yes = await sqls.get_user_about(user_id, msg.from_user.username)
+    user_gender = if_yes['user_gender']
+    if user_gender:
+                await msg.answer(text.cre_user_gender2.format(gender=user_gender))
+    else:
+                await msg.answer(text.cre_user_gender) 
+    await state.set_state(Gen.cre_user_gender) 
+            
+
+# 1.2  user_gender
+@dp.message(Gen.cre_user_gender)
+@flags.chat_action("typing")
+async def cre_user_name(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr"]:  
+    prompt = msg.text 
+    user_id = msg.from_user.id
+    if "Далее ▶️" not in prompt:   
+        await sqls.cre_user_item(user_id, "user_gender", prompt)
+    else:
+        await msg.delete()
+    if_yes = await sqls.get_user_about(user_id, msg.from_user.username)
+    user_city = if_yes['user_city']
+    if user_city:
+                await msg.answer(text.cre_user_city2.format(city=user_city))
+    else:
+                await msg.answer(text.cre_user_city) 
+    await state.set_state(Gen.cre_user_city) 
+        
+
+# 1.3  user_city
+@dp.message(Gen.cre_user_city)
+@flags.chat_action("typing")
+async def cre_user_city(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr"]:  
+    prompt = msg.text 
+    user_id = msg.from_user.id
+    if "Далее ▶️" not in prompt:    
+        await sqls.cre_user_item(user_id, "user_city", prompt)
+    else:
+        await msg.delete()
+    if_yes = await sqls.get_user_about(user_id, msg.from_user.username)
+    user_birth = if_yes['user_birth']
+    if user_birth:
+                await msg.answer(text.cre_user_birth2.format(date=user_birth))
+    else:
+                await msg.answer(text.cre_user_birth) 
+    await state.set_state(Gen.cre_user_birth) 
+        
+
+# 1.4  user_birth
+@dp.message(Gen.cre_user_birth)
+@flags.chat_action("typing")
+async def cre_user_birth(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr"]:  
+    prompt = msg.text 
+    user_id = msg.from_user.id
+    if "Далее ▶️" not in prompt:    
+        date_obj = datetime.strptime(prompt, '%d.%m.%Y').date()  # Преобразуем в объект date
+        await sqls.cre_user_item(user_id, "user_birth", date_obj)
+    else:
+        await msg.delete()
+    if_yes = await sqls.get_user_about(user_id, msg.from_user.username)
+    user_interests = if_yes['user_interests']
+    if user_interests:
+                await msg.answer(text.cre_user_interests2.format(name=user_interests))
+    else:
+                await msg.answer(text.cre_user_interests) 
+    await state.set_state(Gen.cre_user_interests) 
+
+
+# 1.5  user_interests
+@dp.message(Gen.cre_user_interests)
+@flags.chat_action("typing")
+async def cre_user_interests(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr"]:  
+    prompt = msg.text 
+    user_id = msg.from_user.id
+    if "Далее ▶️" not in prompt:    
+        await sqls.cre_user_item(user_id, "user_interests", prompt)
+    else:
+        await msg.delete()
+    if_yes = await sqls.get_user_about(user_id, msg.from_user.username)
+    user_meets = if_yes['user_meets']
+    if user_meets:
+                await msg.answer(text.cre_user_meets2.format(name=user_meets))
+    else:
+                await msg.answer(text.cre_user_meets) 
+    await state.set_state(Gen.cre_user_meets) 
+      
+
+# 1.6  user_meets
+@dp.message(Gen.cre_user_meets)
+@flags.chat_action("typing")
+async def cre_user_meets(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr"]:  
+    prompt = msg.text 
+    user_id = msg.from_user.id
+    if "Далее ▶️" not in prompt:    
+        await sqls.cre_user_item(user_id, "user_meets", prompt)
+    else:
+        await msg.delete()
+    await msg.answer(text.cre_user_photos2, reply_markup=kb.menu2)
+    await state.set_state(Gen.cre_user_photos)
+    
+
+# 1.7  user_photos
+@dp.message(Gen.cre_user_photos)
+@flags.chat_action("typing")
+async def cre_user_photos(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    if msg.photo:  # Если сообщение содержит фото
+        photo = msg.photo[-1]
+        file_info = await bot.get_file(photo.file_id)
+
+        file_url = f"https://api.telegram.org/file/bot{bot_token}/{file_info.file_path}"
+
+        await msg.answer(f"Ссылка на ваше фото: {file_url}")
+
+        user_id = msg.from_user.id
+        user_photos1 = await sqls.get_value_user(user_id, config.users_tb_pg)
+        if user_photos1:
+            user_photos = user_photos1[0]["user_photos"]
+            if not user_photos:
+                 user_photos = [] 
+            user_photos.append(file_url)
+
+            await sqls.cre_user_item(user_id, "user_photos", user_photos)
+
+        await msg.answer(text.greet_question2, reply_markup=kb.menu2)
+        await state.set_state(Gen.select_menu2)
+    elif "Далее ▶️" not in msg.text:  
+        await msg.delete()
+        await msg.answer(text.greet_question2, reply_markup=kb.menu2)
+    else:
+        await msg.answer(text.cre_user_photos2)
+        await state.set_state(Gen.cre_user_photos)
+        
+    
+
+def clean_key(input_string, point_units):
+    # Удаляем все вхождения слова "Граммы" без учета регистра
+    #input_string = re.sub(r'граммы', '', input_string, flags=re.IGNORECASE)
+    for unit in point_units:
+        # Удаляем текущее слово из input_string без учета регистра
+        input_string = re.sub(rf'\b{re.escape(unit)}\b', '', input_string, flags=re.IGNORECASE)
+    
+    # Удаляем круглые скобки
+    input_string = re.sub(r'{[()]}', '', input_string)
+    
+    # Удаляем двойные пробелы
+    input_string = re.sub(r'\s+', ' ', input_string)
+    
+    # Удаляем пробелы в начале и в конце строки
+    input_string = input_string.strip()
+    
+    return input_string
+
+
+async def cre_user_message_def(msg: Message, state: FSMContext, bot: Bot):
+    #if msg.from_user.username in ["Evgenkr"]:  
+    if msg.voice:
+            voice_path = await utils.save_voice_as_mp3(bot, msg.voice)
+            result = model.transcribe(voice_path)
+            #prompt = prompt_question + await utils.audio_to_text(voice_path)
+            prompt = result["text"]
+    else:
+            prompt = msg.text
+
+    #await msg.answer("<b>Вы сказали:</b>\n" + prompt) 
+    msg2 = await msg.answer("<i>ИИ анализирует сообщение, подождите... 🤔🤔🤔</i>")
+    #await msg.answer_animation(animation="https://media.giphy.com/media/l0MYGBj2zP6aFOm1W/giphy.gif")
+    await bot(SendChatAction(chat_id=msg.chat.id, action="typing"))
+
+    user_id = msg.from_user.id
+    message_id = await sqls.save_message(user_id, prompt)
+    datetime_now = str(datetime.now().timestamp())
+
+    result = await utils.get_rapidapi(prompts.prompt_message.format(prompt=prompt))
+    if result is None:
+    # Обработка ошибки или дефолтное значение
+        await msg.answer("<i>Извините, ИИ выдал ошибку, повторите ваше сообщение чуть позже.</i>")
+        return
+    analize_message, total_tokens = result
+    total_tokens_all = total_tokens
+
+    analize_message = analize_message.strip()
+    analize_message = analize_message.replace("'''", "'")
+    analize_message = analize_message.replace("json", "")
+    if msg.from_user.username in config.testers:  
+        await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Разбил на Тематики из Поинтсов...&gt;\n----------------\n" + analize_message) 
+
+    if analize_message:
+
+        try:
+            json_object = json.loads(analize_message)
+            print("analize_message JSON валидный")
+
+            #date_finish = int(datetime.now().timestamp()
+            # Обновляем запись в базе данных
+
+            
+            s = ""
+            s_clarification = ""
+            s_dish = ""
+            s_dish_err = ""  
+            s_act = ""
+            s_act_err = "" 
+            s_sleep = ""
+            s_sleep_err = "" 
+            for key, value in json_object.items():
+                print(f"Key: {key}, Value: {value}")
+                if value and value != "-":
+                    if_yes = await sqls.get_points(key)
+                     
+                    if if_yes:
+                        point_dict = {item['point_text']: item['point_unit'] for item in if_yes}
+                        print("cre_user_message: " + str(point_dict))
+                        #await msg.answer(str(point_dict)) 
+                        point_texts = [record['point_text'] + " " + record['point_unit'] for record in if_yes]
+                        metrics = ', '.join(point_texts)
+
+                        prompt1 = "" 
+                        s_add = ""
+                        s_clarification_add = ""
+
+                        if key == "Питание":
+                            analize_dish = prompts.prompt_food_accept.format(prompt=value)
+                            result = await utils.get_rapidapi(analize_dish)
+                            if result is None:
+                            # Обработка ошибки или дефолтное значение
+                                await msg.answer("<i>Извините, ИИ выдал ошибку, повторите ваше сообщение чуть позже.</i>")
+                                return
+                            analize_dish, total_tokens = result
+                            total_tokens_all += total_tokens
+
+                            analize_dish = analize_dish.strip()
+                            analize_dish = analize_dish.replace("'''", "'")
+                            analize_dish = analize_dish.replace("json", "")
+                            if msg.from_user.username in config.testers: 
+                                await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Разбил на Блюда в Питании...&gt;\n----------------\n" + analize_dish) 
+
+                            json_object3 = json.loads(analize_dish)
+                            for key3, value3 in json_object3.items():
+                                    if value3 == "1":   # если блюдо "правильное", можно разбить на составляющие
+                                        if s_dish:
+                                            s_dish += ", " + key3
+                                        else:
+                                            s_dish = key3
+                                    else:               # если блюдо "неправильное", копим вопросы к пользователю
+                                        if s_dish_err:
+                                            s_dish_err += " \n" + value3
+                                        else:
+                                            s_dish_err = value3
+                            if s_dish:
+                                prompt1 = prompts.prompt_food.format(metrics=metrics, prompt=s_dish)
+                            s_add = "<i>Составляющие еды:</i>\n"
+                            s_clarification_add = prompts.s_clarification_food.format(user_message=value)
+
+                        elif key == "Отдых":
+                             prompt1 = prompts.prompt_relax.format(metrics=metrics, prompt=value)
+                             s_add = "<i>Разновидности отдыха:</i>\n"
+                             s_clarification_add = prompts.s_clarification_rest.format(user_message=value)
+
+                        elif key == "Сон":
+                            analize_sleep = prompts.prompt_sleep_accept.format(prompt=value)
+                            result = await utils.get_rapidapi(analize_sleep)
+                            if result is None:
+                            # Обработка ошибки или дефолтное значение
+                                await msg.answer("<i>Извините, ИИ выдал ошибку, повторите ваше сообщение чуть позже.</i>")
+                                return
+                            analize_sleep, total_tokens = result
+                            total_tokens_all += total_tokens
+
+                            analize_sleep = analize_sleep.strip()
+                            analize_sleep = analize_sleep.replace("'''", "'")
+                            analize_sleep = analize_sleep.replace("json", "")
+                            if msg.from_user.username in config.testers: 
+                                await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Разбил на различные Сны...&gt;\n----------------\n" + analize_sleep) 
+
+                            json_object3 = json.loads(analize_sleep)
+                            for key3, value3 in json_object3.items():
+                                    if value3 == "1":   # если блюдо "правильное", можно разбить на составляющие
+                                        if s_sleep:
+                                            s_sleep += ", " + key3
+                                        else:
+                                            s_sleep = key3
+                                    else:               # если блюдо "неправильное", копим вопросы к пользователю
+                                        if s_sleep_err:
+                                            s_sleep_err += " \n" + value3
+                                        else:
+                                            s_sleep_err = value3
+
+                            if s_sleep:
+                                prompt1 = prompts.prompt_sleep.format(metrics=metrics, prompt=s_sleep)
+                            s_add = "<i>Ключевые моменты сна:</i>\n"
+                            s_clarification_add = prompts.s_clarification_sleep.format(user_message=value)
+
+                        elif key == "Активность":
+                            analize_act = prompts.prompt_action_accept.format(prompt=value)
+                            result = await utils.get_rapidapi(analize_act)
+                            if result is None:
+                            # Обработка ошибки или дефолтное значение
+                                await msg.answer("<i>Извините, ИИ выдал ошибку, повторите ваше сообщение чуть позже.</i>")
+                                return
+                            analize_act, total_tokens = result
+                            total_tokens_all += total_tokens
+
+                            analize_act = analize_act.strip()
+                            analize_act = analize_act.replace("'''", "'")
+                            analize_act = analize_act.replace("json", "")
+                            if msg.from_user.username in config.testers: 
+                                await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Разбил на различные Активности...&gt;\n----------------\n" + analize_act) 
+
+                            json_object3 = json.loads(analize_act)
+                            for key3, value3 in json_object3.items():
+                                    if value3 == "1":   # если блюдо "правильное", можно разбить на составляющие
+                                        if s_act:
+                                            s_act += ", " + key3
+                                        else:
+                                            s_act = key3
+                                    else:               # если блюдо "неправильное", копим вопросы к пользователю
+                                        if s_act_err:
+                                            s_act_err += " \n" + value3
+                                        else:
+                                            s_act_err = value3
+
+                            if s_act:
+                                prompt1 = prompts.prompt_action.format(metrics=metrics, prompt=s_act)
+                            s_add = "<i>Перечень активностей:</i>\n"
+                            s_clarification_add = prompts.s_clarification_action.format(user_message=value)
+
+                        elif key == "Противопоказания":
+                             
+
+                             prompt1 = prompts.prompt_contraindications.format(metrics=metrics, prompt=value)
+                             s_add = "<i>Беспокойства:</i>\n"
+                             s_clarification_add = "Противопоказания"
+
+                        elif key == "Настроение":
+                             prompt1 = prompts.prompt_mood.format(metrics=metrics, prompt=value)
+                             s_add = "<i>Ваши чувства:</i>\n"
+                             s_clarification_add = "Настроение"
+
+                        elif key == "Недовольство":
+                             prompt1 = prompts.prompt_discontent.format(metrics=metrics, prompt=value)
+                             s_add = "<i>Перечень:</i>\n"
+                             s_clarification_add = "Недовольство"
+
+                        elif key == "Профиль":
+                             datetime_now = str(datetime.now().timestamp())
+                             prompt1 = prompts.prompt_profil.format(datetime_now=datetime_now, metrics=metrics, prompt=value)
+                             s_add = "<i>Данные о себе:</i>\n"
+                             s_clarification_add = "Профиль"
+
+                        elif key == "Показатели":
+                             prompt1 = prompts.prompt_indicators.format(metrics=metrics, prompt=value)
+                             s_add = "<i>Показатели здоровья, ваших интересов:</i>\n"
+                             s_clarification_add = "Показатели"
+
+                        elif key == "Команда":
+                             prompt1 = prompts.prompt_command.format(metrics=metrics, prompt=value)
+                             s_add = "<i>Обнаружена команда для бота:</i>\n"
+                             s_clarification_add = "Команда"
+
+                        else:
+                             print(f'Неучтенная тематика: {key}')
+                        #elif key == "Цель":
+                        #     prompt1 = prompts.prompt_discontent.format(metrics=metrics, prompt=value)
+                        #     s_add = "<i>Ключевые моменты:</i>\n"
+
+                        analize_all = ""
+                        if prompt1:
+                            result = await utils.get_rapidapi(prompt1)
+                            if result is None:
+                            # Обработка ошибки или дефолтное значение
+                                await msg.answer("<i>Извините, ИИ выдал ошибку, повторите ваше сообщение чуть позже.</i>")
+                                return
+                            analize_all, total_tokens = result
+                            total_tokens_all += total_tokens
+
+                            analize_all = analize_all.strip()
+                            analize_all = analize_all.replace("'''", "'")
+                            analize_all = analize_all.replace("json", "")
+                            if msg.from_user.username in config.testers: 
+                                await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Запрашивал составляющие по каждому Поинту...&gt;\n----------------\n" + analize_all) 
+                        #await msg.answer(analize_all) 
+
+                        if analize_all and analize_all != {}:
+                            if key == "Питание":
+                                s += f"\n<u>{key}</u> вошли блюда\напитки:  <b>{s_dish}</b>\n"
+                            elif key == "Активность":
+                                s += f"\n<u>{key}</u> вошли активности\спорт:  <b>{s_act}</b>\n"
+                            elif key == "Профиль":
+                                s += f"\n<u>{key}</u> заменили в профиле:  <b>{value}</b>\n"
+                            elif key == "Сон":
+                                s += f"\n<u>{key}</u> выделили показатели сна:  <b>{s_sleep}</b>\n"
+                            else:
+                                s += f"\n<u>{key}</u>:  <b>{value}</b>\n"
+
+                            json_object2 = json.loads(analize_all)
+                            s2 = ""
+                            for key2, value2 in json_object2.items():
+                                if value2 and value2 != "-":
+                                    #s2 += f"{key2}:  <b>{value2}</b> {point_dict[key2]}\n"
+                                    #unit = point_dict.get(key2, 'неизвестная единица')  # Установите значение по умолчанию
+                                    if key2 in point_dict:
+                                        s2 += f"{key2}:  <b>{value2}</b> ({point_dict[key2]})\n"
+                                    else:
+                                        #point_units = list(point_dict.values())
+                                        point_units = [value for value in point_dict.values() if value]
+                                        key2_clean = clean_key(key2, point_units)
+                                        if key2_clean in point_dict:
+                                            s2 += f"{key2_clean}:  <b>{value2}</b> ({point_dict[key2_clean]})\n"
+                                        else:
+                                            # если даже после удаления измерений ключ не найден - что будем делать?
+                                            s3 = "" 
+
+                                    if key2 == "Профиль":
+                                        # вставить найденное в сообщении в профиль, в базу users_tb, и динамические показатели там же?
+                                        s3 = ""
+                                
+                            s += s_add + s2
+                        else:
+                            s_clarification += "\n" + s_clarification_add
+
+                        await sqls.save_pointlog(user_id, key, message_id, analize_all, value)
+                            
+                    else:
+                        await msg.answer(text.cre_user_start2)  
+                        await state.set_state(Gen.cre_user_message) 
+            #await cursor.execute("UPDATE amo_call SET date_finish = %s, result = %s WHERE id = %s", (date_finish, analize_metrics, record_id))
+            #await conn.commit()
+
+            # если хоть что-то определилось
+            s_all_err = ""
+            if s_dish_err: 
+                    s_all_err += s_dish_err
+            if s_act_err: 
+                    s_all_err += " \n" + s_act_err
+            if s_sleep_err: 
+                    s_all_err += " \n" + s_sleep_err
+
+            if s:
+                user_about = text.cre_message.format(analize_all=s) 
+                #if msg.from_user.username in config.testers: 
+                await msg.answer(user_about)  
+
+                result = await utils.get_rapidapi(prompts.prompt_relevant.format(user_message = s))
+                if result is None:
+                # Обработка ошибки или дефолтное значение
+                    await msg.answer("<i>Извините, ИИ выдал ошибку, повторите ваше сообщение чуть позже.</i>")
+                    return
+                prompt_relevant, total_tokens = result
+
+                await msg2.delete()
+
+                total_tokens_all += total_tokens
+                if msg.from_user.username in config.testers: 
+                    await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Запрашивал сформировать ответ на сообщение пользователя...&gt;>\n----------------\n") 
+                await msg.answer(prompt_relevant) 
+
+                if s_all_err:
+                    if msg.from_user.username in config.testers: 
+                        await msg.answer("Токенов затрачено: <b>0" + "</b>\n&lt;...Это бесплатные вопросы...&gt;\n----------------\n")                 
+                    await msg.answer(s_all_err)                 
+
+                if msg.from_user.username in config.testers: 
+                    await msg.answer("\n----------------------\nВсего затрачено токенов на это сообщение: <b>" + str(total_tokens_all) + "</b>") 
+
+                #s_all_err = ""
+                #if s_dish_err: 
+                #    s_all_err += prompts.s_clarification_food.format(user_message=s_dish_err)
+                #if s_act_err: 
+                #    s_all_err += prompts.s_clarification_action.format(user_message=s_act_err)
+                    
+                #if s_all_err:
+                    #prompt_ask, total_tokens = await utils.get_rapidapi(s_all_err)
+                    #await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Запрашивал уточняющие вопросы...&gt;\n" + "<u>ПЕРВЫЙ вариант ошибки, если не определилось блюдо или активность:</u>\n" + prompt_ask)  
+                
+
+                #if s_clarification: 
+                    #prompt_ask, total_tokens = await utils.get_rapidapi(s_clarification)
+                    #await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Запрашивал уточняющие вопросы...&gt;\n" + "<u>ВТОРОЙ вариант ошибки, если не определилось блюдо или отдых или активность:</u>\n" + prompt_ask)  
+
+                #await msg.answer(text.cre_user_message_menu2) 
+                # 
+                #  
+
+            # если ничего не определилось, но попытка была
+            elif s_clarification: 
+                
+                await msg2.delete()
+                if s_all_err:
+                    if msg.from_user.username in config.testers: 
+                        await msg.answer("Токенов затрачено: <b>0" + "</b>\n&lt;...Это бесплатные вопросы...&gt;\n----------------\n")                 
+                    await msg.answer(s_all_err)  
+                else:
+                    #надо проанализировать, когда такое случается, чтобы хоть что-то выдавать и толковое
+                    s_all_err = ""               
+       
+                if msg.from_user.username in config.testers: 
+                    await msg.answer("\n----------------------\nВсего затрачено токенов на это сообщение: <b>" + str(total_tokens_all) + "</b>") 
+
+                #s_all_err = ""
+                #if s_dish_err: 
+                #    s_all_err += prompts.s_clarification_food.format(user_message=s_dish_err)
+                #if s_act_err: 
+                #    s_all_err += prompts.s_clarification_action.format(user_message=s_act_err)
+                    
+                #if s_all_err:
+                #    prompt_ask, total_tokens = await utils.get_rapidapi(s_all_err)
+                #    await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Запрашивал уточняющие вопросы...&gt;\n" + "<u>ПЕРВЫЙ вариант ошибки, если не определилось блюдо или активность:</u>\n" + prompt_ask)  
+                
+
+                #prompt_ask, total_tokens = await utils.get_rapidapi(s_clarification)
+                #await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Запрашивал уточняющие вопросы...&gt;\n" + "<u>ВТОРОЙ вариант ошибки, если не определилось ниодно блюдо или отдых или активность:</u>\n" + prompt_ask) 
+
+            # если сообщение не релевантное
+            else:
+                result = await utils.get_rapidapi(prompts.prompt_err_irrelevant.format(user_message = prompt))
+                if result is None:
+                # Обработка ошибки или дефолтное значение
+                    await msg.answer("<i>Извините, ИИ выдал ошибку, повторите ваше сообщение чуть позже.</i>")
+                    return
+                prompt_err_irrelevant, total_tokens = result
+
+                total_tokens_all += total_tokens
+                if msg.from_user.username in config.testers: 
+                    await msg.answer("Токенов затрачено: <b>" + str(total_tokens) + "</b>\n&lt;...Запрашивал ответ по нерелевантному сообщению...&gt;\n----------------\n") 
+                await msg.answer(prompt_err_irrelevant) 
+
+                if msg.from_user.username in config.testers: 
+                    await msg.answer("\n----------------------\nВсего затрачено токенов на это сообщение: <b>" + str(total_tokens_all) + "</b>") 
+                
+
+            await state.set_state(Gen.cre_user_message) 
+            
+
+        except json.JSONDecodeError as e:
+            date_finish = int(datetime.now().timestamp())
+            
+            await msg.answer(text.err_ai2)  
+            await msg.answer(text.cre_user_start2)
+            await state.set_state(Gen.cre_user_message)  
+            
+            print(f'400 analize_profil не валидный json: {e}')
+            #analize_metrics = f'400 analize_metrics не валидный: {e}'
+            #await cursor.execute("UPDATE amo_call SET date_finish2 = %s, result2 = %s WHERE id = %s", (date_finish, analize_metrics, record_id))
+            #await conn.commit()
+            #return None
+    else:
+        await msg.answer(text.err_ai)  
+        await msg.answer(text.cre_user_start2)
+        await state.set_state(Gen.cre_user_message)  
+
+
+@dp.message(Gen.cre_user_message)
+@flags.chat_action("typing")
+async def cre_user_message(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+
+    await cre_user_message_def(msg, state, bot)
+
+
+@dp.message()
+@flags.chat_action("typing")
+async def cre_user_message(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+
+    await cre_user_message_def(msg, state, bot)
+
+
+
+
+# 2.1 count_food
+@dp.callback_query(F.data == "count_food")
+async def count_food_prompt(clbck: CallbackQuery, state: FSMContext):
+    await clbck.message.delete()
+    
+    user_id = clbck.from_user.id
+
+    pointlog_json = await sqls.count_food(user_id, "Питание", 1) 
+    summed_data = {}
+    for row in pointlog_json:
+        pointlog = json.loads(row['pointlog_json'])
+        for key, value in pointlog.items():
+            value = float(value)
+
+            if key in summed_data:
+                summed_data[key] += value
+            else:
+                summed_data[key] = value
+
+    if_yes = await sqls.get_points("Питание")
+    if if_yes:
+        point_dict = {item['point_text']: item['point_unit'] for item in if_yes}
+
+        #json_object = json.dumps(summed_data, indent=4, ensure_ascii=False)
+        s = ""
+        for key, value in summed_data.items():
+            if value and value != "-":
+                s += f"{key}:  <b>{value}</b> {point_dict[key]}\n"
+
+        user_about = text.cre_message_food.format(analize_all=s) 
+        await clbck.message.answer(user_about)  
+
+    #recommend_food = await utils.get_rapidapi(prompts.recommend_food.format(prompt=s))
+
+    #await clbck.message.answer(recommend_food, reply_markup=kb.menu2)  
+    await clbck.message.answer(text.cre_user_message_menu2)  
+
+    await state.set_state(Gen.cre_user_message)
+
+
+
+# 2.2  advise_food
+
+@dp.callback_query(F.data == "advise_food")
+async def advise_food_prompt(clbck: CallbackQuery, state: FSMContext):
+    await clbck.message.delete()
+    
+    user_id = clbck.from_user.id
+
+    pointlog_json = await sqls.count_food(user_id, "Питание", 1) 
+    summed_data = {}
+    for row in pointlog_json:
+        pointlog = json.loads(row['pointlog_json'])
+        for key, value in pointlog.items():
+            value = float(value)
+
+            if key in summed_data:
+                summed_data[key] += value
+            else:
+                summed_data[key] = value
+
+    if_yes = await sqls.get_points("Питание")
+    if if_yes:
+        point_dict = {item['point_text']: item['point_unit'] for item in if_yes}
+
+        #json_object = json.dumps(summed_data, indent=4, ensure_ascii=False)
+        s = ""
+        for key, value in summed_data.items():
+            if value and value != "-":
+                s += f"{key}:  <b>{value}</b> {point_dict[key]}\n"
+
+        #user_about = text.cre_message_food.format(analize_all=s) 
+        #await clbck.message.answer(user_about)  
+
+    recommend_food = await utils.get_rapidapi(prompts.recommend_food.format(prompt=s))
+
+    await clbck.message.answer(recommend_food, reply_markup=kb.menu2)  
+    await clbck.message.answer(text.cre_user_message_menu2)  
+
+    await state.set_state(Gen.cre_user_message)
+
+
+
+
+
+
+
+
+
+
+# 2.1 user_profil
+
+@dp.callback_query(F.data == "user_profil")
+async def user_profil_prompt(clbck: CallbackQuery, state: FSMContext, bot: Bot):
+    await clbck.message.delete()
+    
+    user_id = clbck.from_user.id
+
+    if_yes = await sqls.get_user_about(user_id, clbck.from_user.username)
+    #whatStage = what_stage(if_yes)
+    if if_yes:
+        user_name = if_yes['user_name'] if if_yes['user_name'] else "-"
+        user_gender = if_yes['user_gender'] if if_yes['user_gender'] else "-"
+        user_city = if_yes['user_city'] if if_yes['user_city'] else "-"
+        user_birth = if_yes['user_birth'] if if_yes['user_birth'] else "-"
+        user_zodiak = if_yes['user_zodiak'] if if_yes['user_zodiak'] else "-"
+        user_interests = if_yes['user_interests'] if if_yes['user_interests'] else "-"
+        user_meets = if_yes['user_meets'] if if_yes['user_meets'] else "-"
+        user_link_facebook = if_yes['user_link_facebook'] if if_yes['user_link_facebook'] else "-"
+        user_link_instagram = if_yes['user_link_instagram'] if if_yes['user_link_instagram'] else "-"
+        user_link_linkenin = if_yes['user_link_linkenin'] if if_yes['user_link_linkenin'] else "-"
+        
+        #keys = ', '.join(if_yes["keys"]) if if_yes['keys'] else "-"
+
+        user_about = text.cre_profil.format(user_name=user_name, user_gender=user_gender, user_city=user_city, user_birth=user_birth, user_zodiak=user_zodiak,  user_interests=user_interests, user_meets=user_meets, user_link_facebook=user_link_facebook, user_link_instagram=user_link_instagram, user_link_linkenin=user_link_linkenin) 
+        await clbck.message.answer(user_about, reply_markup=kb.menu1)  
+        await state.set_state(Gen.cre_user_message)
+
+        if if_yes['user_photos']:
+            media_group = []
+            for url in if_yes['user_photos']:
+                response = requests.get(url)
+                if response.status_code == 200:
+                    img_byte_arr = BytesIO(response.content)
+                    img_byte_arr.seek(0)
+                    
+                    # Добавляем объект BytesIO напрямую в InputMediaPhoto
+                    media_group.append(InputMediaPhoto(media=img_byte_arr, caption="Фото"))
+
+            # Отправляем группу фотографий пользователю
+            if media_group:
+                await bot.send_media_group(chat_id=clbck.message.chat.id, media=media_group)
+
+
+# 2.2 user_about
+
+@dp.callback_query(F.data == "user_about")
+async def user_about_prompt(clbck: CallbackQuery, state: FSMContext):
+    await clbck.message.delete()
+    
+    user_id = clbck.from_user.id
+
+    await fill_stage(0, clbck.message, state, user_id) 
+        
+  
+
+
+# 2.3 help help help help
+
+@dp.callback_query(F.data == "user_help")
+async def user_help_prompt(clbck: CallbackQuery, state: FSMContext):
+    await state.set_state(Gen.user_help)
+    await clbck.message.delete()
+    
+    user_id = clbck.from_user.id
+    
+    data = await sqls.get_value_user(user_id, f'{config.helps_tb_pg}')
+         
+    if data and data[0]['help_answer']:
+                print(f"create_help: {str(data[0]['help_date'])} : {str(data[0]['help_answer'])}")
+             
+                data_help = f"Ваш последний комментарий: {str(data[0]['help_date'])} \n{str(data[0]['help_answer'])}"
+                print(f"user_help + data_help: {str(data_help)}")
+                await clbck.message.answer(text.cre_help1.format(name=data_help), reply_markup=kb.exit_kb)
+                
+    else:
+                await clbck.message.answer(text.cre_help, reply_markup=kb.exit_kb)
+    
+
+
+@dp.message(Gen.user_help)
+@flags.chat_action("typing")
+async def user_help(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr"]:  
+    if True:    
+        #if msg.voice:
+            #voice_path = await utils.save_voice_as_mp3(bot, msg.voice)
+            #result = model.transcribe(voice_path)
+
+            #prompt = result["text"]
+            
+            #await msg.answer(prompt, reply_markup=kb.exit_kb)
+        #else:
+            #prompt = msg.text
+
+        prompt = msg.text 
+        msg2 = await msg.answer(text.cre_project_exit, reply_markup=kb.exit_kb)
+        
+        if ("Выход в меню2".lower() in msg.text.lower()) or ("/menu" in msg.text):
+                    print(f"select_site мыход в меню2")
+                    await state.set_state(Gen.cre_user_message)
+                    #await msg.delete()
+                    await msg2.delete()
+                    await msg.answer(text.cre_greet, reply_markup=kb.menu1)
+        else:
+            user_id = msg.from_user.id
+            #await update_value(user_id, "project_name", msg.text[0:40])
+            await sqls.ins_item_value(user_id, f'{config.helps_tb_pg}', 'help_answer', f'{prompt}')
+      
+            await msg.answer(text.cre_help2, reply_markup=kb.menu1)
+            await state.set_state(Gen.cre_user_message)
+            
+        #await msg.answer(text.cre_help2, reply_markup=kb.menu1)
+
+
+
+# 2.4 money money money money
+
+@dp.callback_query(F.data == "user_buy_tiket")
+async def user_buy_tiket_prompt(clbck: CallbackQuery, state: FSMContext):
+    await state.set_state(Gen.user_buy_tiket)
+    await clbck.message.delete()
+    await clbck.message.answer(text.cre_money, reply_markup=kb.exit_kb)
+
+@dp.message(Gen.user_buy_tiket)
+@flags.chat_action("typing")
+async def user_buy_tiket(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr","SunChild5"]:  
+    if ("Выход в меню".lower() in msg.text.lower()) or ("/menu" in msg.text):
+            print(f"generate_keys Выход в меню")
+            await state.set_state(Gen.cre_user_message)
+            await msg.delete()
+            await msg.answer(text.gen_greet, reply_markup=kb.menu1)  
+
+
+
+# 2.5 menu menu menu menu
+
+@dp.callback_query(F.data == "select_menu1")
+async def select_menu_prompt(clbck: CallbackQuery, state: FSMContext):
+    await state.set_state(Gen.cre_user_message)
+    await clbck.message.delete()
+    await clbck.message.answer(text.cre_greet, reply_markup=kb.menu1)
+    #await clbck.message.answer(text.cre_semantik, reply_markup=kb.exit_kb3)
+
+@dp.message(Gen.select_menu1)
+@flags.chat_action("typing")
+async def select_menu(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr","SunChild5"]:  
+    if ("Выход в меню".lower() in msg.text.lower()) or ("/menu" in msg.text):
+            print(f"Выход в /menu  Рё  generate_text")
+            await state.set_state(Gen.cre_user_message)
+            await msg.delete()
+            await msg.answer(text.gen_greet, reply_markup=kb.menu2)  
+
+
+
+
+
+#async def make_row_keyboard(items: list[str]) -> ReplyKeyboardMarkup:
+#    #l.append(InlineKeyboardButton(text=s, callback_data=MyCallback(what="project_choose", keys=item.strip()).pack()))
+#    buttons_list = [[InlineKeyboardButton(text=item.strip(), callback_data=MyCallback(what="keys_choose", keys=item.strip()).pack())] for item in items]
+#    return InlineKeyboardMarkup(inline_keyboard=buttons_list)
+
+async def make_row_keyboard(items: list[str]) -> ReplyKeyboardMarkup:
+    buttons_list = [[InlineKeyboardButton(text=items[i].strip(), callback_data=MyCallback2(what="questions_choose", num=i+1).pack())] for i in range(len(items))]
+    buttons_list.append([InlineKeyboardButton(text="👻+1 Вопрос от ИИ", callback_data=MyCallback2(what="questions_choose_1", num=0).pack())])
+    return InlineKeyboardMarkup(inline_keyboard=buttons_list)
+
+async def make_row_keyboard_minus(items: list[str]) -> ReplyKeyboardMarkup:
+    buttons_list = [[InlineKeyboardButton(text=items[i].strip(), callback_data=MyCallback2(what="answers_choose", num=i+1).pack())] for i in range(len(items))]
+    buttons_list.append([InlineKeyboardButton(text="👻+1 Ответ от ИИ", callback_data=MyCallback2(what="answers_choose_1", num=0).pack())])
+    return InlineKeyboardMarkup(inline_keyboard=buttons_list)
+
+
+
+async def question_text(next_question, clbck: CallbackQuery, state: FSMContext, msg: Message, bot: Bot):
+    if clbck:
+        msg = clbck.message
+
+    await msg.answer(text.cre_question_exit, reply_markup=kb.exit_kb2)
+
+    if next_question['question_type_answer'] == 10:
+        await state.set_state(Gen.question_type_answer_10) 
+
+        buttons_list = []
+        for i, item in enumerate(next_question['question_answers']):
+                    #btns_txt.append(str(item['project_number']) + ". " + str(item['project_name']))
+                    s = str(item)
+                    l = []
+                    l.append(InlineKeyboardButton(text=s, callback_data=MyCallback(what="answer_choose", keys=str(i)).pack()))
+                    buttons_list.append(l)  
+
+        keyboard_inline_buttons = InlineKeyboardMarkup(inline_keyboard=buttons_list)
+
+        async with aiohttp.ClientSession() as session:
+            async with session.head(next_question['question_link']) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'image' in content_type:
+                    await bot.send_photo(chat_id=msg.chat.id, photo=next_question['question_link'], caption=text.questions_start_answer_10.format(link='',question=next_question['question_text']), reply_markup=keyboard_inline_buttons)      
+                elif 'video' in content_type:
+                    await bot.send_video(chat_id=msg.chat.id, video=next_question['question_link'], caption=text.questions_start_answer_10.format(link='',question=next_question['question_text']), reply_markup=keyboard_inline_buttons)
+                else:
+                    await msg.answer(text.questions_start_answer_10.format(link=next_question['question_link'],question=next_question['question_text']), reply_markup=keyboard_inline_buttons)
+        
+        return
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.head(next_question['question_link']) as response:
+                    content_type = response.headers.get('Content-Type', '')
+                    if content_type:
+                        if 'image' in content_type:
+                            await bot.send_photo(chat_id=msg.chat.id, photo=next_question['question_link'], caption=text.questions_start_answer_10.format(link='',question=next_question['question_text']), reply_markup=keyboard_inline_buttons)      
+                        
+                        elif 'application/vnd.apple.mpegurl' in content_type or 'application/x-mpegURL' in content_type or 'video/x-mpegURL' in content_type:
+                                await bot.send_message(chat_id=msg.chat.id, text=text.questions_start_answer_10.format(link=next_question['question_link'],question=next_question['question_text']), reply_markup=keyboard_inline_buttons)
+
+                        elif 'video/x-ms-asf' in content_type:
+                                await bot.send_message(chat_id=msg.chat.id, text=text.questions_start_answer_10.format(link=next_question['question_link'],question=next_question['question_text']), reply_markup=keyboard_inline_buttons)
+
+                        elif 'application/dash+xml' in content_type:
+                                await bot.send_message(chat_id=msg.chat.id, text=text.questions_start_answer_10.format(link=next_question['question_link'],question=next_question['question_text']), reply_markup=keyboard_inline_buttons)
+
+                        elif 'application/x-rtmp' in content_type:
+                                await bot.send_message(chat_id=msg.chat.id, text=text.questions_start_answer_10.format(link=next_question['question_link'],question=next_question['question_text']), reply_markup=keyboard_inline_buttons)
+
+                        elif 'application/vnd.ms-asf' in content_type:
+                                await bot.send_message(chat_id=msg.chat.id, text=text.questions_start_answer_10.format(link=next_question['question_link'],question=next_question['question_text']), reply_markup=keyboard_inline_buttons)
+
+                        elif 'video' in content_type:
+                                await bot.send_video(chat_id=msg.chat.id, video=next_question['question_link'], caption=text.questions_start_answer_10.format(link='',question=next_question['question_text']), reply_markup=keyboard_inline_buttons)
+                        
+                        else:
+                            await bot.send_message(chat_id=msg.chat.id, text=text.questions_start_answer_10.format(link=next_question['question_link'],question=next_question['question_text']), reply_markup=keyboard_inline_buttons)
+
+                        await bot.send_message(chat_id=msg.chat.id, text=next_question['question_link'], reply_markup=keyboard_inline_buttons)
+                    
+                    else:
+                        print(f"Ошибка при получении MIME-типа")
+                        return None
+                
+            except Exception as e:
+                print(f"Ошибка при получении MIME-типа: {e}")
+                streaming_platforms = [
+                    r"(https?://)?(www\.)?(youtube|youtu\.be|twitch|vimeo)\.com",
+                    # Можно добавить другие стриминговые платформы
+                ]
+                for pattern in streaming_platforms:
+                    if re.search(pattern, msg.text):
+                        await msg.reply("Ссылка на потоковое видео обнаружена!")
+                        return
+                await msg.reply("Это обычная ссылка, не потоковое видео.")
+                return False
+        
+        return True
+            
+    elif next_question['question_type_answer'] == 1:
+        await state.set_state(Gen.question_type_answer_1)
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.head(next_question['question_link']) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'image' in content_type:
+                    await bot.send_photo(chat_id=msg.chat.id, photo=next_question['question_link'], caption=text.questions_start_answer_1.format(link='',question=next_question['question_text']))      
+                elif 'video' in content_type:
+                    await bot.send_video(chat_id=msg.chat.id, video=next_question['question_link'], caption=text.questions_start_answer_1.format(link='',question=next_question['question_text']))
+                else:
+                    await msg.answer(text.questions_start_answer_1.format(link=next_question['question_link'],question=next_question['question_text']))
+        
+    elif next_question['question_type_answer'] == 2:
+        await state.set_state(Gen.question_type_answer_2)
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.head(next_question['question_link']) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'image' in content_type:
+                    await bot.send_photo(chat_id=msg.chat.id, photo=next_question['question_link'], caption=text.questions_start_answer_2.format(link='',question=next_question['question_text']))      
+                elif 'video' in content_type:
+                    await bot.send_video(chat_id=msg.chat.id, video=next_question['question_link'], caption=text.questions_start_answer_2.format(link='',question=next_question['question_text']))
+                else:
+                    await msg.answer(text.questions_start_answer_2.format(link=next_question['question_link'],question=next_question['question_text']))
+
+    elif next_question['question_type_answer'] == 3:
+        await state.set_state(Gen.question_type_answer_3) 
+
+        async with aiohttp.ClientSession() as session:
+            async with session.head(next_question['question_link']) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'image' in content_type:
+                    await bot.send_photo(chat_id=msg.chat.id, photo=next_question['question_link'], caption=text.questions_start_answer_3.format(link='',question=next_question['question_text']))      
+                elif 'video' in content_type:
+                    await bot.send_video(chat_id=msg.chat.id, video=next_question['question_link'], caption=text.questions_start_answer_3.format(link='',question=next_question['question_text']))
+                else:
+                    await msg.answer(text.questions_start_answer_3.format(link=next_question['question_link'],question=next_question['question_text']))
+
+    elif next_question['question_type_answer'] == 4:
+        await state.set_state(Gen.question_type_answer_4) 
+
+        async with aiohttp.ClientSession() as session:
+            async with session.head(next_question['question_link']) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'image' in content_type:
+                    await bot.send_photo(chat_id=msg.chat.id, photo=next_question['question_link'], caption=text.questions_start_answer_4.format(link='',question=next_question['question_text']))      
+                elif 'video' in content_type:
+                    await bot.send_video(chat_id=msg.chat.id, video=next_question['question_link'], caption=text.questions_start_answer_4.format(link='',question=next_question['question_text']))
+                else:
+                    await msg.answer(text.questions_start_answer_4.format(link=next_question['question_link'],question=next_question['question_text']))
+       
+    elif next_question['question_type_answer'] == 5:
+        await state.set_state(Gen.question_type_answer_5) 
+
+        async with aiohttp.ClientSession() as session:
+            async with session.head(next_question['question_link']) as response:
+                content_type = response.headers.get('Content-Type', '')
+                if 'image' in content_type:
+                    await bot.send_photo(chat_id=msg.chat.id, photo=next_question['question_link'], caption=text.questions_start_answer_5.format(link='',question=next_question['question_text']))      
+                elif 'video' in content_type:
+                    await bot.send_video(chat_id=msg.chat.id, video=next_question['question_link'], caption=text.questions_start_answer_5.format(link='',question=next_question['question_text']))
+                else:
+                    await msg.answer(text.questions_start_answer_5.format(link=next_question['question_link'],question=next_question['question_text']))
+           
+
+    else:
+        await state.set_state(Gen.select_menu2)
+        await msg.delete()
+        await msg.answer(text.gen_greet, reply_markup=kb.menu2)  
+
+        return False
+
+    return True               
+
+
+# 3.1 question
+
+@dp.callback_query(F.data == "questions_start")
+async def questions_start_prompt(clbck: CallbackQuery, state: FSMContext, bot: Bot):
+    #fdir = Path("users/"+clbck.from_user.username
+    fdir = Path("users/"+clbck.from_user.username) if clbck.from_user.username else Path("users/"+str(clbck.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    await state.set_state(Gen.questions_start)
+    await clbck.message.delete()
+
+    #if clbck.from_user.username in ["Evgenkr"]:  
+    if True:  
+
+        user_id = clbck.from_user.id
+        next_question = await sqls.get_next_question(user_id, "Быстрые")
+        print(f"questions_start next_question: {str(next_question)}")
+        if next_question:
+            await question_text(next_question, clbck, state, None, bot)
+
+        else:
+            await clbck.message.answer(text.greet_pay2, reply_markup=kb.menu1) 
+            await state.set_state(Gen.select_menu1) 
+        #await clbck.answer(text.cre_greet, reply_markup=kb.exit_kb)
+
+
+
+#@dp.message(Gen.create_open)
+@dp.callback_query(MyCallback.filter(F.what == "answer_choose"))
+async def answer_choose_prompt(clbck: CallbackQuery, callback_data: MyCallback, state: FSMContext, bot: Bot):
+    
+    #if clbck.from_user.username in ["Evgenkr"]:      
+    if True:
+        await clbck.message.delete()
+        #mesg = await clbck.message.answer(text.sel_wait_project_info)
+
+        user_id = clbck.from_user.id
+
+        next_question = await sqls.get_next_question(user_id, "Быстрые")
+        print(f"answer_choose next_question: {str(next_question)}")
+
+        if next_question:
+            if next_question['question_text_after']:
+                await clbck.message.answer(next_question['question_text_after'])
+
+            text_callback_data = next_question['question_answers'][int(callback_data.keys)]
+            
+            await sqls.ins_answer_question(user_id, text_callback_data, next_question['question_id'])
+
+            await sqls.cre_user_item(user_id, 'user_question_id', next_question['question_id'])
+        
+            next_question = await sqls.get_next_question(user_id, "Быстрые")
+            print(f"answer_choose-2 next_question: {str(next_question)}")
+            if next_question:
+                await question_text(next_question, clbck, state, None, bot)
+
+            else:
+                await clbck.message.answer(text.greet_pay2, reply_markup=kb.menu1) 
+                await state.set_state(Gen.select_menu1) 
+
+        else:
+            await clbck.message.answer(text.greet_pay2, reply_markup=kb.menu1) 
+            await state.set_state(Gen.select_menu1) 
+
+
+
+
+async def save_question_text(user_id, state: FSMContext, msg: Message, msg_text, bot: Bot):
+        
+        next_question = await sqls.get_next_question(user_id, "Быстрые")
+        print(f"answer_choose next_question: {str(next_question)}")
+
+        if next_question:
+            if next_question['question_text_after']:
+                await msg.answer(next_question['question_text_after'])
+
+            await sqls.ins_answer_question(user_id, msg_text, next_question['question_id'])
+
+            await sqls.cre_user_item(user_id, 'user_question_id', next_question['question_id'])
+        
+            next_question = await sqls.get_next_question(user_id, "Быстрые")
+            print(f"answer_choose-2 next_question: {str(next_question)}")
+            if next_question:
+                await question_text(next_question, None, state, msg, bot)
+
+            else:
+                await msg.answer(text.greet_pay2, reply_markup=kb.menu1) 
+                await state.set_state(Gen.select_menu1)  
+
+
+
+@dp.message(Gen.question_type_answer_10)
+@flags.chat_action("typing")
+async def question_type_answer_10(msg: Message, state: FSMContext):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr","SunChild5"]:  
+    if ("◀️ Выйти в /menu2".lower() in msg.text.lower()) or ("/menu" in msg.text):
+            #print(f"Выход в /menu  Рё  generate_text")
+            await state.set_state(Gen.select_menu2)
+            await msg.delete()
+            await msg.answer(text.gen_greet, reply_markup=kb.menu2)  
+    else:
+        await state.set_state(Gen.question_type_answer_10) 
+        await msg.answer(text.cre_question_type_answer_10)  
+
+
+@dp.message(Gen.question_type_answer_1)
+@flags.chat_action("typing")
+async def question_type_answer_1(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr","SunChild5"]:  
+    if not msg.text:
+        await state.set_state(Gen.question_type_answer_1) 
+        await msg.answer(text.cre_question_type_answer_1) 
+
+    elif ("◀️ Выйти в /menu2".lower() in msg.text.lower()) or ("/menu" in msg.text):
+            #print(f"Выход в /menu  Рё  generate_text")
+            await state.set_state(Gen.select_menu2)
+            await msg.delete()
+            await msg.answer(text.gen_greet, reply_markup=kb.menu2)  
+    else:
+        user_id = msg.from_user.id
+
+        await save_question_text(user_id, state, msg, msg.text, bot)
+        
+
+
+@dp.message(Gen.question_type_answer_2)
+@flags.chat_action("typing")
+async def question_type_answer_2(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr","SunChild5"]: 
+    if not msg.text:
+        await state.set_state(Gen.question_type_answer_2) 
+        await msg.answer(text.cre_question_type_answer_2) 
+ 
+    elif ("◀️ Выйти в /menu2".lower() in msg.text.lower()) or ("/menu" in msg.text):
+            #print(f"Выход в /menu  Рё  generate_text")
+            await state.set_state(Gen.select_menu2)
+            await msg.delete()
+            await msg.answer(text.gen_greet, reply_markup=kb.menu2)  
+    else:
+        user_id = msg.from_user.id
+
+        #date_obj = datetime.strptime(msg.text, '%d.%m.%Y').date()
+        date_pattern = re.compile(r'^\d{2}\.\d{2}\.\d{4}$')
+
+        if date_pattern.match(msg.text):
+            # Если формат верный, пытаемся преобразовать строку в дату
+            #date_obj = datetime.strptime(msg.text, '%d.%m.%Y').date()
+            await save_question_text(user_id, state, msg, msg.text, bot)
+
+        else:
+            await state.set_state(Gen.question_type_answer_2) 
+            await msg.answer(text.cre_question_type_answer_2)  
+        
+
+
+@dp.message(Gen.question_type_answer_3)
+@flags.chat_action("typing")
+async def question_type_answer_3(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr","SunChild5"]: 
+    if not msg.text:
+        await state.set_state(Gen.question_type_answer_3) 
+        await msg.answer(text.cre_question_type_answer_3) 
+ 
+    elif ("◀️ Выйти в /menu2".lower() in msg.text.lower()) or ("/menu" in msg.text):
+            #print(f"Выход в /menu  Рё  generate_text")
+            await state.set_state(Gen.select_menu2)
+            await msg.delete()
+            await msg.answer(text.gen_greet, reply_markup=kb.menu2)  
+    else:
+        user_id = msg.from_user.id
+
+        if msg.text.isdigit():
+            await save_question_text(user_id, state, msg, msg.text, bot)
+
+        else:
+            await state.set_state(Gen.question_type_answer_3) 
+            await msg.answer(text.cre_question_type_answer_3)  
+        
+
+
+@dp.message(Gen.question_type_answer_4)
+@flags.chat_action("typing")
+async def question_type_answer_4(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr","SunChild5"]: 
+    if not msg.text:
+        await state.set_state(Gen.question_type_answer_4) 
+        await msg.answer(text.cre_question_type_answer_4) 
+ 
+    elif ("◀️ Выйти в /menu2".lower() in msg.text.lower()) or ("/menu" in msg.text):
+            #print(f"Выход в /menu  Рё  generate_text")
+            await state.set_state(Gen.select_menu2)
+            await msg.delete()
+            await msg.answer(text.gen_greet, reply_markup=kb.menu2)  
+    else:
+        user_id = msg.from_user.id
+
+        URL_REGEX = re.compile(
+            r"(https?://[^\s]+|www\.[^\s]+)"
+        )
+        if URL_REGEX.search(msg.text):
+            await save_question_text(user_id, state, msg, msg.text, bot)
+
+        else:
+            await state.set_state(Gen.question_type_answer_4) 
+            await msg.answer(text.cre_question_type_answer_4)  
+  
+
+
+@dp.message(Gen.question_type_answer_5)
+@flags.chat_action("typing")
+async def question_type_answer_5(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr","SunChild5"]: 
+    if not msg.photo:
+        if msg.text and ("◀️ Выйти в /menu2".lower() in msg.text.lower() or "/menu" in msg.text):
+            #print(f"Выход в /menu  Рё  generate_text")
+            await state.set_state(Gen.select_menu2)
+            await msg.delete()
+            await msg.answer(text.gen_greet, reply_markup=kb.menu2)
+        else:
+            await state.set_state(Gen.question_type_answer_5) 
+            await msg.answer(text.cre_question_type_answer_5) 
+    else:
+        user_id = msg.from_user.id
+
+        photo = msg.photo[-1]
+        file_info = await bot.get_file(photo.file_id)
+
+        file_url = f"https://api.telegram.org/file/bot{bot_token}/{file_info.file_path}"
+
+        #await msg.answer(f"Ссылка на ваше фото: {file_url}")
+
+        await save_question_text(user_id, state, msg, file_url)
+
+
+
+# 3.2 questions_see_answers
+
+@dp.callback_query(F.data == "questions_see_answers")
+async def questions_see_answers_prompt(clbck: CallbackQuery, state: FSMContext):
+    #fdir = Path("users/"+clbck.from_user.username
+    fdir = Path("users/"+clbck.from_user.username) if clbck.from_user.username else Path("users/"+str(clbck.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    await state.set_state(Gen.questions_see_answers)
+    await clbck.message.delete()
+
+    #if clbck.from_user.username in ["Evgenkr"]:  
+    if True:  
+
+        user_id = clbck.from_user.id
+        if_yes = await sqls.get_answers_tb(user_id)
+        print(f"questions_see_answers: {str(if_yes)}")
+
+        if if_yes:
+            s = ""                     
+            for item in if_yes:
+                if_yes2 = await sqls.get_one_question(item["answer_question_id"])
+                if if_yes2:
+                    s += "\n\n" + "<b>" + str(if_yes2["question_step"]) + "</b>"  
+                    s += "\n" + "<u>" + if_yes2["question_text"] + "</u>" 
+                    s += "\n" + "<i>" + '\n'.join(item["answer_answers"]) + "</i>" 
+            await clbck.message.answer(text.cre_questions_see_answers.format(name=s))
+        else:
+            await clbck.message.answer(text.greet_question2, reply_markup=kb.menu2)
+            await state.set_state(Gen.select_menu2)
+        #await clbck.answer(text.cre_greet, reply_markup=kb.exit_kb)
+
+
+
+
+# 4.1 admin_list_question
+
+@dp.callback_query(F.data == "admin_list_question")
+async def admin_list_question_prompt(clbck: CallbackQuery, state: FSMContext):
+    await state.set_state(Gen.admin_list_question)
+    #await clbck.message.delete()
+    if_yes = await sqls.get_all_questions()
+    if if_yes:
+        s = ""
+        for item in if_yes:
+            s += "\n\n" + "<b>" + str(item["question_step"]) + "</b>"  
+            s += "\n" + "<u>" + item["question_text"] + "</u>"
+            s += "\n" + "<i>" + '\n'.join(item["question_answers"]) + "</i>" 
+        await clbck.message.answer(text.cre_admin_list_question.format(name=s))
+    else:
+        await clbck.message.answer(text.cre_admin_list_question2)
+    #await clbck.message.answer(text.cre_semantik, reply_markup=kb.exit_kb3)
+
+@dp.message(Command("admin_list_question"))
+async def admin_list_question_handler(msg: Message, state: FSMContext, bot: Bot):
+    await state.set_state(Gen.admin_list_question)
+    #await clbck.message.delete()
+    if_yes = await sqls.get_all_questions()
+    if if_yes:
+        s = ""
+        for item in if_yes:
+            s += "\n\n" + "<b>" + str(item["question_step"]) + "</b>"  
+            s += "\n" + "<u>" + item["question_text"] + "</u>"
+            s += "\n" + "<i>" + '\n'.join(item["question_answers"]) + "</i>" 
+        await msg.answer(text.cre_admin_list_question.format(name=s))
+    else:
+        await msg.answer(text.cre_admin_list_question2)
+    #await clbck.message.answer(text.cre_semantik, reply_markup=kb.exit_kb3)
+
+
+# 4.2 admin_add_question
+
+@dp.callback_query(F.data == "admin_add_question")
+async def admin_add_question_prompt(clbck: CallbackQuery, state: FSMContext):
+    await state.set_state(Gen.admin_add_question)
+    #await clbck.message.delete()
+    await clbck.message.answer(text.cre_admin_add_question, reply_markup=kb.exit_kb)
+    #await clbck.message.answer(text.cre_semantik, reply_markup=kb.exit_kb3)
+
+@dp.message(Command("admin_add_question"))
+async def admin_add_question_handler(msg: Message, state: FSMContext, bot: Bot):
+    await state.set_state(Gen.admin_add_question)
+    #await clbck.message.delete()
+    await msg.answer(text.cre_admin_add_question, reply_markup=kb.exit_kb)
+    #await clbck.message.answer(text.cre_semantik, reply_markup=kb.exit_kb3)
+
+
+@dp.message(Gen.admin_add_question)
+@flags.chat_action("typing")
+async def admin_add_question(msg: Message, state: FSMContext, bot: Bot):
+    fdir = Path("users/"+msg.from_user.username) if msg.from_user.username else Path("users/"+str(msg.from_user.id))
+    fdir.mkdir(parents=True, exist_ok=True)
+    
+    #if msg.from_user.username in ["Evgenkr","SunChild5"]:  
+    if ("выход в меню".lower() in msg.text.lower()) or ("/menu" in msg.text):
+            print(f"Выход в /menu  Рё  generate_text")
+            await state.set_state(Gen.select_menu1)
+            await msg.delete()
+            await msg.answer(text.gen_greet, reply_markup=kb.menu2)  
+    else:
+        prompt = msg.text 
+        #prompt = ' '.join(prompt.split())
+        lines = prompt.strip().splitlines()
+        #lines = prompt.strip().split('\n')
+        question = lines[0]
+        answers = lines[1:]
+        #answers_str = json.dumps(answers, ensure_ascii=False)
+        #await msg.answer(f"question - {question}, answers_str - {answers_str}", reply_markup=kb.exit_kb)
+ 
+        if question and answers:
+            await sqls.cre_question(question, answers)
+
+            await msg.answer(text.cre_admin_add_question3)
+        else:
+            await msg.answer(text.cre_admin_add_question2, reply_markup=kb.exit_kb)
+    
+
